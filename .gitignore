@@ -1,0 +1,7 @@
+/target
+/log
+
+build.log
+build_error.log
+
+.idea/
