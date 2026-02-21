@@ -10,6 +10,7 @@ use std::env;
 
 mod logging;
 mod proxy;
+mod ui;
 
 #[tokio::main]
 async fn main() {
@@ -33,6 +34,8 @@ async fn main() {
 
     // 3. Build Router
     let app = Router::new()
+        .route("/", get(ui::dashboard))
+        .route("/api/transactions", get(ui::list_transactions))
         .route("/test", get(test_handler))
         .route("/v1/chat/completions", post(proxy::chat_completions))
         // Generic OPTIONS handler for preflight checks
