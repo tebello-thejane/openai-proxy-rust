@@ -51,18 +51,17 @@ function generateCurl(tx) {
   const downstreamUrl = req.downstream_url || 'https://api.openai.com/v1/chat/completions';
   const method = req.method || 'POST';
   const headers = req.headers || {};
-  // Filter proxy-specific headers
-  const filteredHeaders = {};
-  for (const [k, v] of Object.entries(headers)) {
-    const lowerK = k.toLowerCase();
-    if (!['host', 'content-length', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'origin', 'referer', 'sec-fetch-*'].includes(lowerK)) {
-      filteredHeaders[k] = v;
-    }
+  const authHeader = headers.authorization || headers.Authorization || '';
+  const contentType = headers['content-type'] || headers['Content-Type'] || 'application/json';
+  const bodyJson = JSON.stringify(req.body || {});
+  let curl = `curl -X ${method} \\\n`;
+  curl += `  -H "Content-Type: ${contentType}" \\\n`;
+  if (authHeader) {
+    curl += `  -H "Authorization: ${authHeader}" \\\n`;
   }
-  const headersStr = Object.entries(filteredHeaders).map(([k, v]) => `-H "${k}: ${v.replace(/"/g, '\\"')}"`).join(' \\\n  ');
-  const jsonBody = req.body ? JSON.stringify(req.body) : null;
-  const bodyStr = jsonBody ? ` \\\n  --data-raw '${jsonBody}'` : '';
-  return `curl -X ${method}${bodyStr.length ? ' \\\n  ' + headersStr + bodyStr : ' ' + headersStr} \\\n  "${downstreamUrl}"`;
+  curl += `  -d '${bodyJson}' \\\n`;
+  curl += `  "${downstreamUrl}"`;
+  return curl;
 }
 
 async function refreshTransactions() {
