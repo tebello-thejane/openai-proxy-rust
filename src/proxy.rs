@@ -4,14 +4,13 @@ use axum::{
 };
 use reqwest::Client;
 use serde_json::Value;
-use std::env;
 use std::time::Instant;
 use uuid::Uuid;
 use crate::logging::log_transaction;
 use tracing::{info, error};
 use axum::http::{HeaderMap, StatusCode};
 
-pub async fn chat_completions(req: Request) -> Response {
+pub async fn chat_completions(req: Request, dest_url: String) -> Response {
     let _start_time = Instant::now();
     let unique_id = Uuid::new_v4().to_string();
 
@@ -41,8 +40,7 @@ pub async fn chat_completions(req: Request) -> Response {
 
     // 3. Prepare Upstream Request
     let client = Client::new();
-    let upstream_base = env::var("OPENAI_API_BASE").unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
-    let target_url = format!("{}/chat/completions", upstream_base.trim_end_matches('/'));
+    let target_url = dest_url;
 
     let mut upstream_req = client
         .post(&target_url)

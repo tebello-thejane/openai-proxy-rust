@@ -7,14 +7,31 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
-use std::env;
+use clap::Parser;
 
 mod logging;
 mod proxy;
 mod ui;
 
+/// OpenAI API Proxy Server
+#[derive(Parser, Debug)]
+#[command(name = "openai-proxy")]
+#[command(about = "A proxy server for OpenAI API with logging and monitoring")]
+struct Cli {
+    /// Port number to listen on
+    #[arg(short, long, default_value = "3000")]
+    port: u16,
+
+    /// Destination URL for proxying requests
+    #[arg(short, long, default_value = "https://api.openai.com/v1/chat/completions")]
+    dest: String,
+}
+
 #[tokio::main]
 async fn main() {
+    // Parse CLI arguments
+    let cli = Cli::parse();
+
     // 1. Initialize Logging (Stdout only for now, file logging handled per request)
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
@@ -33,23 +50,26 @@ async fn main() {
         .allow_methods(Any)
         .allow_headers(Any);
 
+    // Store destination URL in app state
+    let dest_url = cli.dest.clone();
+
     // 3. Build Router
     let app = Router::new()
         .route("/", get(serve_index))
         .route("/api/transactions", get(ui::list_transactions))
         .route("/test", get(test_handler))
-        .route("/v1/chat/completions", post(proxy::chat_completions))
+        .route("/v1/chat/completions", post(move |req| proxy::chat_completions(req, dest_url.clone())))
         // Generic OPTIONS handler for preflight checks
         .route("/v1/chat/completions", options(options_handler))
         .nest_service("/static", ServeDir::new("static"))
         .layer(cors);
 
     // 4. Start Server
-    let port = env::var("PORT").unwrap_or_else(|_| "3000".to_string());
-    let addr_str = format!("0.0.0.0:{}", port);
+    let addr_str = format!("0.0.0.0:{}", cli.port);
     let addr: SocketAddr = addr_str.parse().expect("Invalid address");
 
     info!("Listening on {}", addr);
+    info!("Proxying to: {}", cli.dest);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
