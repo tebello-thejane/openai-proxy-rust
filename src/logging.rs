@@ -17,6 +17,7 @@ pub struct Transaction {
 pub struct RequestLog {
     pub method: String,
     pub url: String,
+    pub downstream_url: String,
     pub headers: Value,
     pub body: Value,
 }
@@ -33,6 +34,7 @@ pub fn log_transaction(
     id: &str,
     req_method: &str,
     req_url: &str,
+    downstream_url: &str,
     req_headers: Value,
     req_body: Value,
     resp_status: u16,
@@ -46,6 +48,7 @@ pub fn log_transaction(
         request: RequestLog {
             method: req_method.to_string(),
             url: req_url.to_string(),
+            downstream_url: downstream_url.to_string(),
             headers: req_headers,
             body: req_body,
         },

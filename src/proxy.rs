@@ -4,8 +4,10 @@ use axum::{
 };
 use reqwest::Client;
 use serde_json::Value;
+use std::io::Read;
 use std::time::Instant;
 use uuid::Uuid;
+use flate2::read::GzDecoder;
 use crate::logging::log_transaction;
 use tracing::{info, error};
 use axum::http::{HeaderMap, StatusCode};
@@ -71,8 +73,21 @@ pub async fn chat_completions(req: Request, dest_url: String) -> Response {
                 }
             };
 
-            let resp_body_json: Value = serde_json::from_slice(&resp_bytes)
-                .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&resp_bytes).to_string()));
+            // Decompress for logging if gzip
+            let log_resp_bytes = if resp_headers.get("content-encoding").and_then(|v| v.to_str().ok()).map_or(false, |ce| ce.contains("gzip")) {
+                let mut decompressed = Vec::new();
+                let mut decoder = GzDecoder::new(std::io::Cursor::new(resp_bytes.clone()));
+                if decoder.read_to_end(&mut decompressed).is_ok() {
+                    decompressed
+                } else {
+                    resp_bytes.to_vec()
+                }
+            } else {
+                resp_bytes.to_vec()
+            };
+
+            let resp_body_json: Value = serde_json::from_slice(&log_resp_bytes)
+                .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&log_resp_bytes).to_string()));
 
             let resp_headers_json = headers_to_json(&resp_headers);
 
@@ -81,6 +96,7 @@ pub async fn chat_completions(req: Request, dest_url: String) -> Response {
                 &unique_id,
                 method.as_str(),
                 uri.to_string().as_str(),
+                &target_url,
                 req_headers_json,
                 req_body_json,
                 status.as_u16(),
