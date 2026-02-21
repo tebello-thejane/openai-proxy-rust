@@ -75,6 +75,75 @@ async function copyToClipboard(text, label) {
   }
 }
 
+function sanitizeContent(content) {
+  // Convert literal \n sequences to actual newlines
+  return content.replace(/\\n/g, '\n');
+}
+
+function conversationToMarkdown(messages) {
+  let md = '';
+  for (const msg of messages) {
+    const role = msg.role || 'unknown';
+    const content = sanitizeContent(msg.content || '');
+
+    // Capitalize role for display
+    const displayRole = role === 'system' ? 'System'
+                      : role === 'user' ? 'User'
+                      : role === 'assistant' ? 'Assistant'
+                      : role.charAt(0).toUpperCase() + role.slice(1);
+
+    md += `=== ${displayRole} ===\n${content}\n\n`;
+  }
+  return md.trim();
+}
+
+function responseToMarkdown(content) {
+  return `=== Assistant ===\n${sanitizeContent(content)}`;
+}
+
+function downloadMarkdown(content, filename) {
+  const blob = new Blob([content], { type: 'text/markdown' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+
+  const oldStatus = document.getElementById('status').textContent;
+  setStatus(`✓ Downloaded ${filename}`);
+  setTimeout(() => setStatus(oldStatus), 2000);
+}
+
+function downloadConversation(tx) {
+  const messages = tx.request?.body?.messages || [];
+  if (!messages.length) {
+    setStatus('No messages to download');
+    return;
+  }
+  const md = conversationToMarkdown(messages);
+  const timestamp = tx.timestamp ? new Date(tx.timestamp).toISOString().replace(/[:.]/g, '-') : 'unknown';
+  downloadMarkdown(md, `conversation_${timestamp}.md`);
+}
+
+function downloadResponse(tx) {
+  const choices = tx.response?.body?.choices || [];
+  if (!choices.length) {
+    setStatus('No response to download');
+    return;
+  }
+  const content = choices[0]?.message?.content || '';
+  if (!content) {
+    setStatus('Response has no content');
+    return;
+  }
+  const md = responseToMarkdown(content);
+  const timestamp = tx.timestamp ? new Date(tx.timestamp).toISOString().replace(/[:.]/g, '-') : 'unknown';
+  downloadMarkdown(md, `response_${timestamp}.md`);
+}
+
 function attachCopyHandlers() {
   document.querySelectorAll('.response-details pre').forEach(pre => {
     if (!pre.dataset.copyAttached) {
@@ -104,6 +173,13 @@ function attachCopyHandlers() {
       });
       pre.dataset.copyAttached = 'true';
     }
+  });
+
+  // Prevent button clicks from triggering pre copy
+  document.querySelectorAll('.download-md').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+    });
   });
 }
 
@@ -147,11 +223,17 @@ async function refreshTransactions() {
           </div>
           <details class="response-details">
             <summary>Response body</summary>
-            <pre>${JSON.stringify(res.body, null, 2)}</pre>
+            <div class="detail-content">
+              <button class="download-md" onclick='downloadResponse(${JSON.stringify(tx).replace(/'/g, "&#39;")})'>⬇ Response.md</button>
+              <pre>${JSON.stringify(res.body, null, 2)}</pre>
+            </div>
           </details>
           <details class="request-details">
             <summary>Request body</summary>
-            <pre>${JSON.stringify(req.body, null, 2)}</pre>
+            <div class="detail-content">
+              <button class="download-md" onclick='downloadConversation(${JSON.stringify(tx).replace(/'/g, "&#39;")})'>⬇ Conversation.md</button>
+              <pre>${JSON.stringify(req.body, null, 2)}</pre>
+            </div>
           </details>
           <details class="curl-details">
             <summary>Replay with curl (downstream)</summary>
