@@ -3,7 +3,6 @@ use serde_json::Value;
 use std::fs::File;
 use std::io::Write;
 use chrono::Utc;
-use uuid::Uuid;
 use std::path::Path;
 
 #[derive(Serialize)]

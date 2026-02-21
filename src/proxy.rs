@@ -1,8 +1,6 @@
 use axum::{
-    body::Bytes,
     extract::Request,
     response::{IntoResponse, Response},
-    Json,
 };
 use reqwest::Client;
 use serde_json::Value;
@@ -11,10 +9,10 @@ use std::time::Instant;
 use uuid::Uuid;
 use crate::logging::log_transaction;
 use tracing::{info, error};
-use axum::http::{HeaderMap, StatusCode, Method};
+use axum::http::{HeaderMap, StatusCode};
 
 pub async fn chat_completions(req: Request) -> Response {
-    let start_time = Instant::now();
+    let _start_time = Instant::now();
     let unique_id = Uuid::new_v4().to_string();
 
     // 1. Deconstruct Request
@@ -65,7 +63,7 @@ pub async fn chat_completions(req: Request) -> Response {
             let latency = upstream_start.elapsed().as_millis();
             let status = resp.status();
             let resp_headers = resp.headers().clone();
-            
+
             // Read Response Body
             let resp_bytes = match resp.bytes().await {
                 Ok(b) => b,
@@ -77,7 +75,7 @@ pub async fn chat_completions(req: Request) -> Response {
 
             let resp_body_json: Value = serde_json::from_slice(&resp_bytes)
                 .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&resp_bytes).to_string()));
-            
+
             let resp_headers_json = headers_to_json(&resp_headers);
 
             // 5. Log Transaction
@@ -98,14 +96,14 @@ pub async fn chat_completions(req: Request) -> Response {
             // 6. Return Response to Client
             let mut response = axum::body::Body::from(resp_bytes).into_response();
             *response.status_mut() = status;
-            
+
             // Copy headers back
             for (name, value) in &resp_headers {
                 if name != "transfer-encoding" && name != "content-length" {
                       response.headers_mut().insert(name.clone(), value.clone());
                 }
             }
-            
+
             response
         }
         Err(e) => {

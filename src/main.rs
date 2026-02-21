@@ -4,6 +4,7 @@ use axum::{
 };
 use std::net::SocketAddr;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::ServeDir;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 use std::env;
@@ -34,12 +35,13 @@ async fn main() {
 
     // 3. Build Router
     let app = Router::new()
-        .route("/", get(ui::dashboard))
+        .route("/", get(serve_index))
         .route("/api/transactions", get(ui::list_transactions))
         .route("/test", get(test_handler))
         .route("/v1/chat/completions", post(proxy::chat_completions))
         // Generic OPTIONS handler for preflight checks
         .route("/v1/chat/completions", options(options_handler))
+        .nest_service("/static", ServeDir::new("static"))
         .layer(cors);
 
     // 4. Start Server
@@ -48,7 +50,7 @@ async fn main() {
     let addr: SocketAddr = addr_str.parse().expect("Invalid address");
 
     info!("Listening on {}", addr);
-    
+
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
@@ -59,4 +61,11 @@ async fn test_handler() -> &'static str {
 
 async fn options_handler() {
     // Just return 200 OK with CORS headers (handled by middleware)
+}
+
+async fn serve_index() -> impl axum::response::IntoResponse {
+    match tokio::fs::read_to_string("static/index.html").await {
+        Ok(content) => axum::response::Html(content),
+        Err(_) => axum::response::Html("<h1>Error loading dashboard</h1>".to_string()),
+    }
 }

@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpenAI Proxy Dashboard</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <h1>OpenAI Proxy Dashboard</h1>
+
+  <div class="controls">
+    <input type="text" id="apiKey" placeholder="OpenAI API key (sk-…)" />
+    <button onclick="pingTest()">Ping /test</button>
+    <button onclick="sendTestMessage()">Send Test Message</button>
+  </div>
+  <div id="status">Ready.</div>
+
+  <h2>Transaction Log</h2>
+  <div id="transactions"><p style="color:#475569">Loading…</p></div>
+  <p class="hint">Auto-refreshes every 3 s</p>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
