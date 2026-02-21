@@ -83,5 +83,28 @@ pre {
   font-size: 0.78rem;
   overflow-x: auto;
   color: #a5b4fc;
+  transition: background 0.15s, box-shadow 0.15s;
+  position: relative;
+}
+pre[style*="cursor: pointer"]::after {
+  content: "click to copy";
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  font-size: 0.7rem;
+  color: #475569;
+  opacity: 0;
+  transition: opacity 0.15s;
+  pointer-events: none;
+}
+pre[style*="cursor: pointer"]:hover {
+  background: #181d2b;
+  box-shadow: inset 0 0 0 1px #334155;
+}
+pre[style*="cursor: pointer"]:hover::after {
+  opacity: 1;
+}
+pre[style*="cursor: pointer"]:active {
+  background: #1a1f2e;
 }
 .hint { font-size: 0.78rem; color: #475569; margin-top: 8px; }

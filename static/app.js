@@ -64,6 +64,49 @@ function generateCurl(tx) {
   return curl;
 }
 
+async function copyToClipboard(text, label) {
+  try {
+    await navigator.clipboard.writeText(text);
+    const oldStatus = document.getElementById('status').textContent;
+    setStatus(`✓ Copied ${label} to clipboard`);
+    setTimeout(() => setStatus(oldStatus), 2000);
+  } catch(e) {
+    setStatus('Failed to copy: ' + e.message);
+  }
+}
+
+function attachCopyHandlers() {
+  document.querySelectorAll('.response-details pre').forEach(pre => {
+    if (!pre.dataset.copyAttached) {
+      pre.style.cursor = 'pointer';
+      pre.addEventListener('click', () => {
+        copyToClipboard(pre.textContent, 'response body');
+      });
+      pre.dataset.copyAttached = 'true';
+    }
+  });
+
+  document.querySelectorAll('.request-details pre').forEach(pre => {
+    if (!pre.dataset.copyAttached) {
+      pre.style.cursor = 'pointer';
+      pre.addEventListener('click', () => {
+        copyToClipboard(pre.textContent, 'request body');
+      });
+      pre.dataset.copyAttached = 'true';
+    }
+  });
+
+  document.querySelectorAll('.curl-details pre').forEach(pre => {
+    if (!pre.dataset.copyAttached) {
+      pre.style.cursor = 'pointer';
+      pre.addEventListener('click', () => {
+        copyToClipboard(pre.textContent, 'curl command');
+      });
+      pre.dataset.copyAttached = 'true';
+    }
+  });
+}
+
 async function refreshTransactions() {
   // Capture current open states
   const openStates = {};
@@ -117,7 +160,7 @@ async function refreshTransactions() {
         </div>`;
     }).join('');
 
-    // Restore open states
+    // Restore open states and attach copy handlers
     setTimeout(() => {
       Object.entries(openStates).forEach(([txId, sections]) => {
         const card = document.querySelector(`.tx-card[data-tx-id="${txId}"]`);
@@ -136,6 +179,7 @@ async function refreshTransactions() {
           }
         }
       });
+      attachCopyHandlers();
     }, 0);
   } catch(e) {
     // silently ignore refresh errors
