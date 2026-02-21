@@ -3,6 +3,8 @@ use axum::{
     Router,
 };
 use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tracing::{info, Level};
@@ -12,6 +14,7 @@ use clap::Parser;
 mod logging;
 mod proxy;
 mod ui;
+mod ws;
 
 /// OpenAI API Proxy Server
 #[derive(Parser, Debug)]
@@ -50,21 +53,30 @@ async fn main() {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    // Store destination URL in app state
-    let dest_url = cli.dest.clone();
+    // 3. Create broadcast channel for WebSocket notifications
+    let (tx, _rx) = broadcast::channel::<String>(100);
+    let tx = Arc::new(tx);
 
-    // 3. Build Router
+    // Store destination URL and broadcast sender for the proxy handler
+    let dest_url = cli.dest.clone();
+    let proxy_tx = tx.clone();
+
+    // 4. Build Router
     let app = Router::new()
         .route("/", get(serve_index))
         .route("/api/transactions", get(ui::list_transactions))
         .route("/test", get(test_handler))
-        .route("/v1/chat/completions", post(move |req| proxy::chat_completions(req, dest_url.clone())))
+        .route("/v1/chat/completions", post(move |req| {
+            proxy::chat_completions(req, dest_url.clone(), proxy_tx.clone())
+        }))
         // Generic OPTIONS handler for preflight checks
         .route("/v1/chat/completions", options(options_handler))
+        .route("/ws", get(ws::ws_handler))
         .nest_service("/static", ServeDir::new("static"))
-        .layer(cors);
+        .layer(cors)
+        .with_state(tx);
 
-    // 4. Start Server
+    // 5. Start Server
     let addr_str = format!("0.0.0.0:{}", cli.port);
     let addr: SocketAddr = addr_str.parse().expect("Invalid address");
 

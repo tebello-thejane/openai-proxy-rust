@@ -76,7 +76,6 @@ async function copyToClipboard(text, label) {
 }
 
 function sanitizeContent(content) {
-  // Convert literal \n sequences to actual newlines
   return content.replace(/\\n/g, '\n');
 }
 
@@ -85,13 +84,10 @@ function conversationToMarkdown(messages) {
   for (const msg of messages) {
     const role = msg.role || 'unknown';
     const content = sanitizeContent(msg.content || '');
-
-    // Capitalize role for display
     const displayRole = role === 'system' ? 'System'
                       : role === 'user' ? 'User'
                       : role === 'assistant' ? 'Assistant'
                       : role.charAt(0).toUpperCase() + role.slice(1);
-
     md += `=== ${displayRole} ===\n${content}\n\n`;
   }
   return md.trim();
@@ -111,7 +107,6 @@ function downloadMarkdown(content, filename) {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
-
   const oldStatus = document.getElementById('status').textContent;
   setStatus(`✓ Downloaded ${filename}`);
   setTimeout(() => setStatus(oldStatus), 2000);
@@ -119,10 +114,7 @@ function downloadMarkdown(content, filename) {
 
 function downloadConversation(tx) {
   const messages = tx.request?.body?.messages || [];
-  if (!messages.length) {
-    setStatus('No messages to download');
-    return;
-  }
+  if (!messages.length) { setStatus('No messages to download'); return; }
   const md = conversationToMarkdown(messages);
   const timestamp = tx.timestamp ? new Date(tx.timestamp).toISOString().replace(/[:.]/g, '-') : 'unknown';
   downloadMarkdown(md, `conversation_${timestamp}.md`);
@@ -130,75 +122,67 @@ function downloadConversation(tx) {
 
 function downloadResponse(tx) {
   const choices = tx.response?.body?.choices || [];
-  if (!choices.length) {
-    setStatus('No response to download');
-    return;
-  }
+  if (!choices.length) { setStatus('No response to download'); return; }
   const content = choices[0]?.message?.content || '';
-  if (!content) {
-    setStatus('Response has no content');
-    return;
-  }
+  if (!content) { setStatus('Response has no content'); return; }
   const md = responseToMarkdown(content);
   const timestamp = tx.timestamp ? new Date(tx.timestamp).toISOString().replace(/[:.]/g, '-') : 'unknown';
   downloadMarkdown(md, `response_${timestamp}.md`);
 }
 
-function attachCopyHandlers() {
-  document.querySelectorAll('.response-details pre').forEach(pre => {
+function attachCopyHandlersToCard(card) {
+  card.querySelectorAll('.response-details pre, .request-details pre, .curl-details pre').forEach(pre => {
     if (!pre.dataset.copyAttached) {
       pre.style.cursor = 'pointer';
-      pre.addEventListener('click', () => {
-        copyToClipboard(pre.textContent, 'response body');
-      });
+      const label = pre.closest('.response-details') ? 'response body'
+                  : pre.closest('.request-details') ? 'request body'
+                  : 'curl command';
+      pre.addEventListener('click', () => copyToClipboard(pre.textContent, label));
       pre.dataset.copyAttached = 'true';
     }
   });
-
-  document.querySelectorAll('.request-details pre').forEach(pre => {
-    if (!pre.dataset.copyAttached) {
-      pre.style.cursor = 'pointer';
-      pre.addEventListener('click', () => {
-        copyToClipboard(pre.textContent, 'request body');
-      });
-      pre.dataset.copyAttached = 'true';
-    }
-  });
-
-  document.querySelectorAll('.curl-details pre').forEach(pre => {
-    if (!pre.dataset.copyAttached) {
-      pre.style.cursor = 'pointer';
-      pre.addEventListener('click', () => {
-        copyToClipboard(pre.textContent, 'curl command');
-      });
-      pre.dataset.copyAttached = 'true';
-    }
-  });
-
-  // Prevent button clicks from triggering pre copy
-  document.querySelectorAll('.download-md').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-    });
+  card.querySelectorAll('.download-md').forEach(btn => {
+    btn.addEventListener('click', (e) => e.stopPropagation());
   });
 }
 
-async function refreshTransactions() {
-  // Capture current open states
-  const openStates = {};
-  document.querySelectorAll('.tx-card').forEach(card => {
-    const txId = card.dataset.txId;
-    if (txId) {
-      openStates[txId] = [];
-      const responseDetail = card.querySelector('.response-details');
-      const requestDetail = card.querySelector('.request-details');
-      const curlDetail = card.querySelector('.curl-details');
-      if (responseDetail && responseDetail.open) openStates[txId].push('response');
-      if (requestDetail && requestDetail.open) openStates[txId].push('request');
-      if (curlDetail && curlDetail.open) openStates[txId].push('curl');
-    }
-  });
+function renderTxCard(tx) {
+  const req = tx.request || {};
+  const res = tx.response || {};
+  const sc = statusClass(res.status);
+  const txId = tx.id || '';
+  const curlCmd = generateCurl(tx);
+  return `
+    <div class="tx-card" data-tx-id="${txId}">
+      <div class="tx-header">
+        <span class="ts">${fmtTs(tx.timestamp)}</span>
+        <span class="method">${req.method || '?'}</span>
+        <span class="${sc}">${res.status || '?'}</span>
+        <span class="latency">${res.latency_ms != null ? res.latency_ms + ' ms' : ''}</span>
+      </div>
+      <details class="response-details">
+        <summary>Response body</summary>
+        <div class="detail-content">
+          <button class="download-md" onclick='downloadResponse(${JSON.stringify(tx).replace(/'/g, "&#39;")})'>⬇ Response.md</button>
+          <pre>${JSON.stringify(res.body, null, 2)}</pre>
+        </div>
+      </details>
+      <details class="request-details">
+        <summary>Request body</summary>
+        <div class="detail-content">
+          <button class="download-md" onclick='downloadConversation(${JSON.stringify(tx).replace(/'/g, "&#39;")})'>⬇ Conversation.md</button>
+          <pre>${JSON.stringify(req.body, null, 2)}</pre>
+        </div>
+      </details>
+      <details class="curl-details">
+        <summary>Replay with curl (downstream)</summary>
+        <pre>${curlCmd}</pre>
+      </details>
+    </div>`;
+}
 
+// Load existing transactions on page load via HTTP
+async function loadTransactions() {
   try {
     const r = await fetch('/api/transactions');
     const txs = await r.json();
@@ -207,66 +191,60 @@ async function refreshTransactions() {
       el.innerHTML = '<p style="color:#475569">No transactions yet.</p>';
       return;
     }
-    el.innerHTML = txs.map(tx => {
-      const req = tx.request || {};
-      const res = tx.response || {};
-      const sc = statusClass(res.status);
-      const txId = tx.id || '';
-      const curlCmd = generateCurl(tx);
-      return `
-        <div class="tx-card" data-tx-id="${txId}">
-          <div class="tx-header">
-            <span class="ts">${fmtTs(tx.timestamp)}</span>
-            <span class="method">${req.method || '?'}</span>
-            <span class="${sc}">${res.status || '?'}</span>
-            <span class="latency">${res.latency_ms != null ? res.latency_ms + ' ms' : ''}</span>
-          </div>
-          <details class="response-details">
-            <summary>Response body</summary>
-            <div class="detail-content">
-              <button class="download-md" onclick='downloadResponse(${JSON.stringify(tx).replace(/'/g, "&#39;")})'>⬇ Response.md</button>
-              <pre>${JSON.stringify(res.body, null, 2)}</pre>
-            </div>
-          </details>
-          <details class="request-details">
-            <summary>Request body</summary>
-            <div class="detail-content">
-              <button class="download-md" onclick='downloadConversation(${JSON.stringify(tx).replace(/'/g, "&#39;")})'>⬇ Conversation.md</button>
-              <pre>${JSON.stringify(req.body, null, 2)}</pre>
-            </div>
-          </details>
-          <details class="curl-details">
-            <summary>Replay with curl (downstream)</summary>
-            <pre>${curlCmd}</pre>
-          </details>
-        </div>`;
-    }).join('');
-
-    // Restore open states and attach copy handlers
-    setTimeout(() => {
-      Object.entries(openStates).forEach(([txId, sections]) => {
-        const card = document.querySelector(`.tx-card[data-tx-id="${txId}"]`);
-        if (card) {
-          if (sections.includes('response')) {
-            const detail = card.querySelector('.response-details');
-            if (detail) detail.open = true;
-          }
-          if (sections.includes('request')) {
-            const detail = card.querySelector('.request-details');
-            if (detail) detail.open = true;
-          }
-          if (sections.includes('curl')) {
-            const detail = card.querySelector('.curl-details');
-            if (detail) detail.open = true;
-          }
-        }
-      });
-      attachCopyHandlers();
-    }, 0);
+    el.innerHTML = txs.map(tx => renderTxCard(tx)).join('');
+    el.querySelectorAll('.tx-card').forEach(card => attachCopyHandlersToCard(card));
   } catch(e) {
-    // silently ignore refresh errors
+    // silently ignore load errors
   }
 }
 
-refreshTransactions();
-setInterval(refreshTransactions, 3000);
+// Prepend a single new transaction card at the top (no re-render of existing cards)
+function prependTransaction(tx) {
+  const el = document.getElementById('transactions');
+  // Remove "No transactions yet" placeholder if present
+  const placeholder = el.querySelector('p');
+  if (placeholder) placeholder.remove();
+
+  const html = renderTxCard(tx);
+  const temp = document.createElement('div');
+  temp.innerHTML = html;
+  const card = temp.firstElementChild;
+  el.prepend(card);
+  attachCopyHandlersToCard(card);
+}
+
+// WebSocket connection with auto-reconnect
+function connectWebSocket() {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${protocol}//${window.location.host}/ws`;
+  const ws = new WebSocket(wsUrl);
+
+  ws.onopen = () => {
+    console.log('WebSocket connected');
+    setStatus('Connected (live updates)');
+  };
+
+  ws.onmessage = (event) => {
+    try {
+      const tx = JSON.parse(event.data);
+      prependTransaction(tx);
+    } catch(e) {
+      console.error('Failed to parse WS message:', e);
+    }
+  };
+
+  ws.onclose = () => {
+    console.log('WebSocket disconnected, reconnecting in 3s…');
+    setStatus('Disconnected. Reconnecting…');
+    setTimeout(connectWebSocket, 3000);
+  };
+
+  ws.onerror = (err) => {
+    console.error('WebSocket error:', err);
+    ws.close();
+  };
+}
+
+// Initialize: load existing transactions, then connect WebSocket for live updates
+loadTransactions();
+connectWebSocket();

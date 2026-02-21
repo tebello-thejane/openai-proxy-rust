@@ -41,7 +41,7 @@ pub fn log_transaction(
     resp_headers: Value,
     resp_body: Value,
     latency_ms: u128,
-) {
+) -> Option<String> {
     let transaction = Transaction {
         id: id.to_string(),
         timestamp: Utc::now().to_rfc3339(),
@@ -56,7 +56,7 @@ pub fn log_transaction(
             status: resp_status,
             headers: resp_headers,
             body: resp_body,
-            latency_ms: latency_ms,
+            latency_ms,
         },
     };
 
@@ -74,9 +74,11 @@ pub fn log_transaction(
             } else {
                 tracing::error!("Failed to create log file: {}", filename);
             }
+            Some(json_content)
         }
         Err(e) => {
             tracing::error!("Failed to serialize transaction log: {}", e);
+            None
         }
     }
 }

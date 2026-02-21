@@ -5,14 +5,16 @@ use axum::{
 use reqwest::Client;
 use serde_json::Value;
 use std::io::Read;
+use std::sync::Arc;
 use std::time::Instant;
 use uuid::Uuid;
 use flate2::read::GzDecoder;
 use crate::logging::log_transaction;
+use crate::ws::TxBroadcast;
 use tracing::{info, error};
 use axum::http::{HeaderMap, StatusCode};
 
-pub async fn chat_completions(req: Request, dest_url: String) -> Response {
+pub async fn chat_completions(req: Request, dest_url: String, tx_broadcast: Arc<TxBroadcast>) -> Response {
     let _start_time = Instant::now();
     let unique_id = Uuid::new_v4().to_string();
 
@@ -92,7 +94,7 @@ pub async fn chat_completions(req: Request, dest_url: String) -> Response {
             let resp_headers_json = headers_to_json(&resp_headers);
 
             // 5. Log Transaction
-            log_transaction(
+            let tx_json = log_transaction(
                 &unique_id,
                 method.as_str(),
                 uri.to_string().as_str(),
@@ -104,6 +106,11 @@ pub async fn chat_completions(req: Request, dest_url: String) -> Response {
                 resp_body_json,
                 latency,
             );
+
+            // Broadcast to WebSocket clients
+            if let Some(json_str) = tx_json {
+                let _ = tx_broadcast.send(json_str);
+            }
 
             info!("[{}] Upstream Response: {} ({}ms)", unique_id, status, latency);
 
