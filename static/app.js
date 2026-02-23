@@ -146,39 +146,106 @@ function attachCopyHandlersToCard(card) {
   });
 }
 
-function renderTxCard(tx) {
+function createDetailsSection(className, summaryText, preContent, downloadBtn) {
+  const details = document.createElement('details');
+  details.className = className;
+
+  const summary = document.createElement('summary');
+  summary.textContent = summaryText;
+  details.appendChild(summary);
+
+  const content = document.createElement('div');
+  content.className = 'detail-content';
+
+  if (downloadBtn) {
+    content.appendChild(downloadBtn);
+  }
+
+  const pre = document.createElement('pre');
+  pre.textContent = preContent;
+  content.appendChild(pre);
+
+  details.appendChild(content);
+  return details;
+}
+
+function createTxCard(tx) {
   const req = tx.request || {};
   const res = tx.response || {};
-  const sc = statusClass(res.status);
   const txId = tx.id || '';
   const curlCmd = generateCurl(tx);
-  return `
-    <div class="tx-card" data-tx-id="${txId}">
-      <div class="tx-header">
-        <span class="ts">${fmtTs(tx.timestamp)}</span>
-        <span class="method">${req.method || '?'}</span>
-        <span class="${sc}">${res.status || '?'}</span>
-        <span class="latency">${res.latency_ms != null ? res.latency_ms + ' ms' : ''}</span>
-      </div>
-      <details class="response-details">
-        <summary>Response body</summary>
-        <div class="detail-content">
-          <button class="download-md" onclick='downloadResponse(${JSON.stringify(tx).replace(/'/g, "&#39;")})'>⬇ Response.md</button>
-          <pre>${JSON.stringify(res.body, null, 2)}</pre>
-        </div>
-      </details>
-      <details class="request-details">
-        <summary>Request body</summary>
-        <div class="detail-content">
-          <button class="download-md" onclick='downloadConversation(${JSON.stringify(tx).replace(/'/g, "&#39;")})'>⬇ Conversation.md</button>
-          <pre>${JSON.stringify(req.body, null, 2)}</pre>
-        </div>
-      </details>
-      <details class="curl-details">
-        <summary>Replay with curl (downstream)</summary>
-        <pre>${curlCmd}</pre>
-      </details>
-    </div>`;
+
+  const card = document.createElement('div');
+  card.className = 'tx-card';
+  card.dataset.txId = txId;
+
+  // Header row
+  const header = document.createElement('div');
+  header.className = 'tx-header';
+
+  const tsSpan = document.createElement('span');
+  tsSpan.className = 'ts';
+  tsSpan.textContent = fmtTs(tx.timestamp);
+
+  const methodSpan = document.createElement('span');
+  methodSpan.className = 'method';
+  methodSpan.textContent = req.method || '?';
+
+  const statusSpan = document.createElement('span');
+  statusSpan.className = statusClass(res.status);
+  statusSpan.textContent = String(res.status || '?');
+
+  const latencySpan = document.createElement('span');
+  latencySpan.className = 'latency';
+  latencySpan.textContent = res.latency_ms != null ? res.latency_ms + ' ms' : '';
+
+  header.appendChild(tsSpan);
+  header.appendChild(methodSpan);
+  header.appendChild(statusSpan);
+  header.appendChild(latencySpan);
+  card.appendChild(header);
+
+  // Response details
+  const respBtn = document.createElement('button');
+  respBtn.className = 'download-md';
+  respBtn.textContent = '⬇ Response.md';
+  respBtn.addEventListener('click', (e) => { e.stopPropagation(); downloadResponse(tx); });
+
+  card.appendChild(createDetailsSection(
+    'response-details',
+    'Response body',
+    JSON.stringify(res.body, null, 2),
+    respBtn
+  ));
+
+  // Request details
+  const reqBtn = document.createElement('button');
+  reqBtn.className = 'download-md';
+  reqBtn.textContent = '⬇ Conversation.md';
+  reqBtn.addEventListener('click', (e) => { e.stopPropagation(); downloadConversation(tx); });
+
+  card.appendChild(createDetailsSection(
+    'request-details',
+    'Request body',
+    JSON.stringify(req.body, null, 2),
+    reqBtn
+  ));
+
+  // Curl details (no detail-content wrapper needed)
+  const curlDetails = document.createElement('details');
+  curlDetails.className = 'curl-details';
+
+  const curlSummary = document.createElement('summary');
+  curlSummary.textContent = 'Replay with curl (downstream)';
+  curlDetails.appendChild(curlSummary);
+
+  const curlPre = document.createElement('pre');
+  curlPre.textContent = curlCmd;
+  curlDetails.appendChild(curlPre);
+
+  card.appendChild(curlDetails);
+
+  return card;
 }
 
 // Load existing transactions on page load via HTTP
@@ -191,7 +258,10 @@ async function loadTransactions() {
       el.innerHTML = '<p style="color:#475569">No transactions yet.</p>';
       return;
     }
-    el.innerHTML = txs.map(tx => renderTxCard(tx)).join('');
+    el.innerHTML = '';
+    for (const tx of txs) {
+      el.appendChild(createTxCard(tx));
+    }
     el.querySelectorAll('.tx-card').forEach(card => attachCopyHandlersToCard(card));
   } catch(e) {
     // silently ignore load errors
@@ -205,10 +275,7 @@ function prependTransaction(tx) {
   const placeholder = el.querySelector('p');
   if (placeholder) placeholder.remove();
 
-  const html = renderTxCard(tx);
-  const temp = document.createElement('div');
-  temp.innerHTML = html;
-  const card = temp.firstElementChild;
+  const card = createTxCard(tx);
   el.prepend(card);
   attachCopyHandlersToCard(card);
 }

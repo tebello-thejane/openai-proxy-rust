@@ -1,21 +1,42 @@
+use crate::logging::log_transaction;
+use crate::AppState;
+use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode};
 use axum::{
     extract::Request,
     response::{IntoResponse, Response},
 };
-use reqwest::Client;
+use flate2::read::GzDecoder;
 use serde_json::Value;
 use std::io::Read;
-use std::sync::Arc;
 use std::time::Instant;
+use tracing::{error, info};
 use uuid::Uuid;
-use flate2::read::GzDecoder;
-use crate::logging::log_transaction;
-use crate::ws::TxBroadcast;
-use tracing::{info, error};
-use axum::http::{HeaderMap, StatusCode};
 
-pub async fn chat_completions(req: Request, dest_url: String, tx_broadcast: Arc<TxBroadcast>) -> Response {
-    let _start_time = Instant::now();
+const MAX_BODY_SIZE: usize = 32 * 1024 * 1024; // 32 MB
+
+const HOP_BY_HOP_HEADERS: &[&str] = &[
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "proxy-connection",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+];
+
+fn is_hop_by_hop(name: &str) -> bool {
+    HOP_BY_HOP_HEADERS
+        .iter()
+        .any(|h| h.eq_ignore_ascii_case(name))
+}
+
+pub async fn chat_completions(
+    State(state): State<AppState>,
+    req: Request,
+) -> Response {
     let unique_id = Uuid::new_v4().to_string();
 
     // 1. Deconstruct Request
@@ -24,12 +45,12 @@ pub async fn chat_completions(req: Request, dest_url: String, tx_broadcast: Arc<
     let uri = parts.uri.clone();
     let headers = parts.headers.clone();
 
-    // 2. Read Request Body
-    let body_bytes = match axum::body::to_bytes(body, usize::MAX).await {
+    // 2. Read Request Body (bounded to prevent OOM DoS)
+    let body_bytes = match axum::body::to_bytes(body, MAX_BODY_SIZE).await {
         Ok(b) => b,
         Err(e) => {
             error!("Failed to read request body: {}", e);
-            return (StatusCode::BAD_REQUEST, "Failed to read body").into_response();
+            return (StatusCode::PAYLOAD_TOO_LARGE, "Request body too large").into_response();
         }
     };
 
@@ -43,18 +64,17 @@ pub async fn chat_completions(req: Request, dest_url: String, tx_broadcast: Arc<
     info!("[{}] Received Request: {} {}", unique_id, method, uri);
 
     // 3. Prepare Upstream Request
-    let client = Client::new();
-    let target_url = dest_url;
+    let target_url = state.dest_url.clone();
 
-    let mut upstream_req = client
-        .post(&target_url)
-        .body(body_bytes.clone()); // Cloning bytes is cheap enough for this use case
+    // TODO: Streaming responses (stream: true) are fully buffered before forwarding.
+    // This breaks real-time SSE streaming for LLM APIs. A future fix should tee
+    // the response stream for simultaneous forwarding and logging.
+    let mut upstream_req = state.client.post(&target_url).body(body_bytes.clone());
 
-    // Forward Headers
+    // Forward headers, filtering out hop-by-hop and connection-specific headers
     for (name, value) in &headers {
-        // filter out host to avoid confusion, and length which is recalculated
-        if name != "host" && name != "content-length" {
-             upstream_req = upstream_req.header(name, value);
+        if name != "host" && name != "content-length" && !is_hop_by_hop(name.as_str()) {
+            upstream_req = upstream_req.header(name, value);
         }
     }
 
@@ -70,13 +90,20 @@ pub async fn chat_completions(req: Request, dest_url: String, tx_broadcast: Arc<
             let resp_bytes = match resp.bytes().await {
                 Ok(b) => b,
                 Err(e) => {
-                     error!("[{}] Failed to read upstream response body: {}", unique_id, e);
-                     return (StatusCode::BAD_GATEWAY, "Upstream error").into_response();
+                    error!(
+                        "[{}] Failed to read upstream response body: {}",
+                        unique_id, e
+                    );
+                    return (StatusCode::BAD_GATEWAY, "Upstream error").into_response();
                 }
             };
 
             // Decompress for logging if gzip
-            let log_resp_bytes = if resp_headers.get("content-encoding").and_then(|v| v.to_str().ok()).map_or(false, |ce| ce.contains("gzip")) {
+            let log_resp_bytes = if resp_headers
+                .get("content-encoding")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|ce| ce.contains("gzip"))
+            {
                 let mut decompressed = Vec::new();
                 let mut decoder = GzDecoder::new(std::io::Cursor::new(resp_bytes.clone()));
                 if decoder.read_to_end(&mut decompressed).is_ok() {
@@ -88,8 +115,10 @@ pub async fn chat_completions(req: Request, dest_url: String, tx_broadcast: Arc<
                 resp_bytes.to_vec()
             };
 
-            let resp_body_json: Value = serde_json::from_slice(&log_resp_bytes)
-                .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&log_resp_bytes).to_string()));
+            let resp_body_json: Value =
+                serde_json::from_slice(&log_resp_bytes).unwrap_or_else(|_| {
+                    Value::String(String::from_utf8_lossy(&log_resp_bytes).to_string())
+                });
 
             let resp_headers_json = headers_to_json(&resp_headers);
 
@@ -105,23 +134,27 @@ pub async fn chat_completions(req: Request, dest_url: String, tx_broadcast: Arc<
                 resp_headers_json,
                 resp_body_json,
                 latency,
-            );
+            )
+            .await;
 
             // Broadcast to WebSocket clients
             if let Some(json_str) = tx_json {
-                let _ = tx_broadcast.send(json_str);
+                let _ = state.tx_broadcast.send(json_str);
             }
 
-            info!("[{}] Upstream Response: {} ({}ms)", unique_id, status, latency);
+            info!(
+                "[{}] Upstream Response: {} ({}ms)",
+                unique_id, status, latency
+            );
 
             // 6. Return Response to Client
             let mut response = axum::body::Body::from(resp_bytes).into_response();
             *response.status_mut() = status;
 
-            // Copy headers back
+            // Copy headers back, filtering hop-by-hop headers
             for (name, value) in &resp_headers {
-                if name != "transfer-encoding" && name != "content-length" {
-                      response.headers_mut().insert(name.clone(), value.clone());
+                if name != "content-length" && !is_hop_by_hop(name.as_str()) {
+                    response.headers_mut().insert(name.clone(), value.clone());
                 }
             }
 
@@ -129,7 +162,7 @@ pub async fn chat_completions(req: Request, dest_url: String, tx_broadcast: Arc<
         }
         Err(e) => {
             error!("[{}] Upstream Request Failed: {}", unique_id, e);
-            (StatusCode::BAD_GATEWAY, format!("Upstream failed: {}", e)).into_response()
+            (StatusCode::BAD_GATEWAY, format!("Upstream failed: {e}")).into_response()
         }
     }
 }

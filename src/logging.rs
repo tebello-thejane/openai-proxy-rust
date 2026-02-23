@@ -1,9 +1,6 @@
+use chrono::Utc;
 use serde::Serialize;
 use serde_json::Value;
-use std::fs::File;
-use std::io::Write;
-use chrono::Utc;
-use std::path::Path;
 
 #[derive(Serialize)]
 pub struct Transaction {
@@ -30,7 +27,35 @@ pub struct ResponseLog {
     pub latency_ms: u128,
 }
 
-pub fn log_transaction(
+fn redact_headers(headers: &Value) -> Value {
+    match headers {
+        Value::Object(map) => {
+            let mut redacted = map.clone();
+            if let Some(auth) = redacted.get_mut("authorization") {
+                if let Some(s) = auth.as_str() {
+                    let redacted_val = if let Some(token) = s.strip_prefix("Bearer ") {
+                        if token.len() > 8 {
+                            format!(
+                                "Bearer {}...{}",
+                                &token[..4],
+                                &token[token.len() - 4..]
+                            )
+                        } else {
+                            "Bearer [REDACTED]".to_string()
+                        }
+                    } else {
+                        "[REDACTED]".to_string()
+                    };
+                    *auth = Value::String(redacted_val);
+                }
+            }
+            Value::Object(redacted)
+        }
+        other => other.clone(),
+    }
+}
+
+pub async fn log_transaction(
     id: &str,
     req_method: &str,
     req_url: &str,
@@ -42,6 +67,9 @@ pub fn log_transaction(
     resp_body: Value,
     latency_ms: u128,
 ) -> Option<String> {
+    let req_headers = redact_headers(&req_headers);
+    let resp_headers = redact_headers(&resp_headers);
+
     let transaction = Transaction {
         id: id.to_string(),
         timestamp: Utc::now().to_rfc3339(),
@@ -63,16 +91,12 @@ pub fn log_transaction(
     // Filename: tx_<ISO-timestamp>_<UUID>.json
     // Sanitize timestamp for filename safety
     let filename_ts = transaction.timestamp.replace(":", "-");
-    let filename = format!("log/tx_{}_{}.json", filename_ts, id);
+    let filename = format!("log/tx_{filename_ts}_{id}.json");
 
     match serde_json::to_string_pretty(&transaction) {
         Ok(json_content) => {
-            if let Ok(mut file) = File::create(Path::new(&filename)) {
-                if let Err(e) = file.write_all(json_content.as_bytes()) {
-                    tracing::error!("Failed to write log file: {}", e);
-                }
-            } else {
-                tracing::error!("Failed to create log file: {}", filename);
+            if let Err(e) = tokio::fs::write(&filename, json_content.as_bytes()).await {
+                tracing::error!("Failed to write log file {}: {}", filename, e);
             }
             Some(json_content)
         }

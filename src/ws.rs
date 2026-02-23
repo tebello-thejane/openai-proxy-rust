@@ -7,13 +7,15 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::info;
 
+use crate::AppState;
+
 pub type TxBroadcast = broadcast::Sender<String>;
 
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
-    State(tx): State<Arc<TxBroadcast>>,
+    State(state): State<AppState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, tx))
+    ws.on_upgrade(move |socket| handle_socket(socket, state.tx_broadcast))
 }
 
 async fn handle_socket(mut socket: WebSocket, tx: Arc<TxBroadcast>) {
@@ -25,7 +27,7 @@ async fn handle_socket(mut socket: WebSocket, tx: Arc<TxBroadcast>) {
             result = rx.recv() => {
                 match result {
                     Ok(msg) => {
-                        if socket.send(Message::Text(msg.into())).await.is_err() {
+                        if socket.send(Message::Text(msg)).await.is_err() {
                             break;
                         }
                     }

@@ -1,7 +1,8 @@
 use axum::{
-    routing::{get, post, options},
+    routing::{get, post},
     Router,
 };
+use reqwest::Client;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -30,6 +31,13 @@ struct Cli {
     dest: String,
 }
 
+#[derive(Clone)]
+pub struct AppState {
+    pub client: Client,
+    pub dest_url: String,
+    pub tx_broadcast: Arc<broadcast::Sender<String>>,
+}
+
 #[tokio::main]
 async fn main() {
     // Parse CLI arguments
@@ -41,11 +49,8 @@ async fn main() {
         .finish();
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-    // Ensure log directory exists
-    let log_dir = "log";
-    if !std::path::Path::new(log_dir).exists() {
-        std::fs::create_dir(log_dir).expect("Failed to create log directory");
-    }
+    // Ensure log directory exists (idempotent, no TOCTOU race)
+    std::fs::create_dir_all("log").ok();
 
     // 2. Setup CORS
     let cors = CorsLayer::new()
@@ -53,28 +58,24 @@ async fn main() {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    // 3. Create broadcast channel for WebSocket notifications
+    // 3. Create shared state
     let (tx, _rx) = broadcast::channel::<String>(100);
-    let tx = Arc::new(tx);
-
-    // Store destination URL and broadcast sender for the proxy handler
-    let dest_url = cli.dest.clone();
-    let proxy_tx = tx.clone();
+    let state = AppState {
+        client: Client::new(),
+        dest_url: cli.dest.clone(),
+        tx_broadcast: Arc::new(tx),
+    };
 
     // 4. Build Router
     let app = Router::new()
         .route("/", get(serve_index))
         .route("/api/transactions", get(ui::list_transactions))
         .route("/test", get(test_handler))
-        .route("/v1/chat/completions", post(move |req| {
-            proxy::chat_completions(req, dest_url.clone(), proxy_tx.clone())
-        }))
-        // Generic OPTIONS handler for preflight checks
-        .route("/v1/chat/completions", options(options_handler))
+        .route("/v1/chat/completions", post(proxy::chat_completions))
         .route("/ws", get(ws::ws_handler))
         .nest_service("/static", ServeDir::new("static"))
         .layer(cors)
-        .with_state(tx);
+        .with_state(state);
 
     // 5. Start Server
     let addr_str = format!("0.0.0.0:{}", cli.port);
@@ -89,10 +90,6 @@ async fn main() {
 
 async fn test_handler() -> &'static str {
     "OpenAI Proxy is running!"
-}
-
-async fn options_handler() {
-    // Just return 200 OK with CORS headers (handled by middleware)
 }
 
 async fn serve_index() -> impl axum::response::IntoResponse {
