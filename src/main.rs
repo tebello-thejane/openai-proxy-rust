@@ -12,6 +12,7 @@ use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 use clap::Parser;
 
+mod download;
 mod logging;
 mod proxy;
 mod ui;
@@ -70,6 +71,8 @@ async fn main() {
     let app = Router::new()
         .route("/", get(serve_index))
         .route("/api/transactions", get(ui::list_transactions))
+        .route("/api/transactions/:id/conversation", get(download::download_conversation))
+        .route("/api/transactions/:id/response", get(download::download_response))
         .route("/test", get(test_handler))
         .route("/v1/chat/completions", post(proxy::chat_completions))
         .route("/ws", get(ws::ws_handler))

@@ -46,24 +46,6 @@ function statusClass(code) {
   return (code >= 200 && code < 300) ? 'status-ok' : 'status-err';
 }
 
-function generateCurl(tx) {
-  const req = tx.request || {};
-  const downstreamUrl = req.downstream_url || 'https://api.openai.com/v1/chat/completions';
-  const method = req.method || 'POST';
-  const headers = req.headers || {};
-  const authHeader = headers.authorization || headers.Authorization || '';
-  const contentType = headers['content-type'] || headers['Content-Type'] || 'application/json';
-  const bodyJson = JSON.stringify(req.body || {});
-  let curl = `curl -X ${method} \\\n`;
-  curl += `  -H "Content-Type: ${contentType}" \\\n`;
-  if (authHeader) {
-    curl += `  -H "Authorization: ${authHeader}" \\\n`;
-  }
-  curl += `  -d '${bodyJson}' \\\n`;
-  curl += `  "${downstreamUrl}"`;
-  return curl;
-}
-
 async function copyToClipboard(text, label) {
   try {
     await navigator.clipboard.writeText(text);
@@ -112,31 +94,47 @@ function downloadMarkdown(content, filename) {
   setTimeout(() => setStatus(oldStatus), 2000);
 }
 
-function downloadConversation(tx) {
-  const messages = tx.request?.body?.messages || [];
-  if (!messages.length) { setStatus('No messages to download'); return; }
-  const md = conversationToMarkdown(messages);
-  const timestamp = tx.timestamp ? new Date(tx.timestamp).toISOString().replace(/[:.]/g, '-') : 'unknown';
-  downloadMarkdown(md, `conversation_${timestamp}.md`);
+async function downloadConversation(tx) {
+  const txId = tx.id;
+  if (!txId) { setStatus('No transaction ID'); return; }
+  try {
+    const r = await fetch(`/api/transactions/${txId}/conversation`);
+    if (!r.ok) {
+      const msg = await r.text();
+      setStatus(msg || 'Failed to download');
+      return;
+    }
+    const md = await r.text();
+    const timestamp = tx.timestamp ? new Date(tx.timestamp).toISOString().replace(/[:.]/g, '-') : 'unknown';
+    downloadMarkdown(md, `conversation_${timestamp}.md`);
+  } catch(e) {
+    setStatus('Error: ' + e.message);
+  }
 }
 
-function downloadResponse(tx) {
-  const choices = tx.response?.body?.choices || [];
-  if (!choices.length) { setStatus('No response to download'); return; }
-  const content = choices[0]?.message?.content || '';
-  if (!content) { setStatus('Response has no content'); return; }
-  const md = responseToMarkdown(content);
-  const timestamp = tx.timestamp ? new Date(tx.timestamp).toISOString().replace(/[:.]/g, '-') : 'unknown';
-  downloadMarkdown(md, `response_${timestamp}.md`);
+async function downloadResponse(tx) {
+  const txId = tx.id;
+  if (!txId) { setStatus('No transaction ID'); return; }
+  try {
+    const r = await fetch(`/api/transactions/${txId}/response`);
+    if (!r.ok) {
+      const msg = await r.text();
+      setStatus(msg || 'Failed to download');
+      return;
+    }
+    const md = await r.text();
+    const timestamp = tx.timestamp ? new Date(tx.timestamp).toISOString().replace(/[:.]/g, '-') : 'unknown';
+    downloadMarkdown(md, `response_${timestamp}.md`);
+  } catch(e) {
+    setStatus('Error: ' + e.message);
+  }
 }
 
 function attachCopyHandlersToCard(card) {
-  card.querySelectorAll('.response-details pre, .request-details pre, .curl-details pre').forEach(pre => {
+  card.querySelectorAll('.response-details pre, .request-details pre').forEach(pre => {
     if (!pre.dataset.copyAttached) {
       pre.style.cursor = 'pointer';
-      const label = pre.closest('.response-details') ? 'response body'
-                  : pre.closest('.request-details') ? 'request body'
-                  : 'curl command';
+      const label = pre.closest('.response-details') ? 'response body' : 'request body';
       pre.addEventListener('click', () => copyToClipboard(pre.textContent, label));
       pre.dataset.copyAttached = 'true';
     }
@@ -173,7 +171,6 @@ function createTxCard(tx) {
   const req = tx.request || {};
   const res = tx.response || {};
   const txId = tx.id || '';
-  const curlCmd = generateCurl(tx);
 
   const card = document.createElement('div');
   card.className = 'tx-card';
@@ -230,20 +227,6 @@ function createTxCard(tx) {
     JSON.stringify(req.body, null, 2),
     reqBtn
   ));
-
-  // Curl details (no detail-content wrapper needed)
-  const curlDetails = document.createElement('details');
-  curlDetails.className = 'curl-details';
-
-  const curlSummary = document.createElement('summary');
-  curlSummary.textContent = 'Replay with curl (downstream)';
-  curlDetails.appendChild(curlSummary);
-
-  const curlPre = document.createElement('pre');
-  curlPre.textContent = curlCmd;
-  curlDetails.appendChild(curlPre);
-
-  card.appendChild(curlDetails);
 
   return card;
 }
