@@ -1,4 +1,5 @@
 use crate::logging::log_transaction;
+use crate::metrics::extract_metrics_from_transaction;
 use crate::AppState;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
@@ -139,7 +140,14 @@ pub async fn chat_completions(
 
             // Broadcast to WebSocket clients
             if let Some(json_str) = tx_json {
-                let _ = state.tx_broadcast.send(json_str);
+                let _ = state.tx_broadcast.send(json_str.clone());
+
+                // Extract and record metrics (don't fail request on metrics error)
+                if let Ok(tx_value) = serde_json::from_str::<Value>(&json_str) {
+                    if let Some(metrics) = extract_metrics_from_transaction(&tx_value) {
+                        let _ = state.metrics.record_transaction(&metrics).await;
+                    }
+                }
             }
 
             info!(

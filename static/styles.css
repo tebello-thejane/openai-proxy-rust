@@ -136,3 +136,105 @@ pre[style*="cursor: pointer"]:active {
   background: #1a1f2e;
 }
 .hint { font-size: 0.78rem; color: #475569; margin-top: 8px; }
+
+/* Metrics Header */
+.metrics-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 24px 0 16px;
+}
+
+.time-window-selector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.time-window-selector label {
+  font-size: 0.85rem;
+  color: #94a3b8;
+}
+
+.time-window-selector select {
+  background: #1e2130;
+  border: 1px solid #334155;
+  color: #e2e8f0;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.time-window-selector select:hover {
+  border-color: #6d28d9;
+}
+
+.time-window-selector select:focus {
+  outline: none;
+  border-color: #7c3aed;
+}
+
+/* Stats Container */
+#stats-container {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.stat-card {
+  background: #1e2130;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stat-value {
+  font-size: 1.75rem;
+  font-weight: 600;
+  color: #a78bfa;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+}
+
+.stat-label {
+  font-size: 0.8rem;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Model stats table */
+.model-stats {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.model-stats th,
+.model-stats td {
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid #334155;
+}
+
+.model-stats th {
+  color: #64748b;
+  font-weight: 500;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+}
+
+.model-stats td {
+  color: #e2e8f0;
+}
+
+.model-stats tr:last-child td {
+  border-bottom: none;
+}

@@ -14,6 +14,7 @@ use clap::Parser;
 
 mod download;
 mod logging;
+mod metrics;
 mod proxy;
 mod ui;
 mod ws;
@@ -37,6 +38,7 @@ pub struct AppState {
     pub client: Client,
     pub dest_url: String,
     pub tx_broadcast: Arc<broadcast::Sender<String>>,
+    pub metrics: Arc<metrics::MetricsDb>,
 }
 
 #[tokio::main]
@@ -53,6 +55,18 @@ async fn main() {
     // Ensure log directory exists (idempotent, no TOCTOU race)
     std::fs::create_dir_all("log").ok();
 
+    // Initialize Metrics database
+    let metrics_db = match metrics::MetricsDb::new("sqlite:metrics.db?mode=rwc").await {
+        Ok(db) => {
+            info!("Metrics database initialized");
+            Arc::new(db)
+        }
+        Err(e) => {
+            tracing::error!("Failed to initialize metrics database: {}", e);
+            std::process::exit(1);
+        }
+    };
+
     // 2. Setup CORS
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -65,6 +79,7 @@ async fn main() {
         client: Client::new(),
         dest_url: cli.dest.clone(),
         tx_broadcast: Arc::new(tx),
+        metrics: metrics_db,
     };
 
     // 4. Build Router
@@ -73,6 +88,10 @@ async fn main() {
         .route("/api/transactions", get(ui::list_transactions))
         .route("/api/transactions/:id/conversation", get(download::download_conversation))
         .route("/api/transactions/:id/response", get(download::download_response))
+        .route("/api/metrics/dashboard", get(ui::get_dashboard_stats))
+        .route("/api/metrics/dashboard/v2", get(ui::get_dashboard_stats_v2))
+        .route("/api/metrics/chart", get(ui::get_hourly_chart))
+        .route("/api/metrics/chart/v2", get(ui::get_chart_data))
         .route("/test", get(test_handler))
         .route("/v1/chat/completions", post(proxy::chat_completions))
         .route("/ws", get(ws::ws_handler))

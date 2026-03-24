@@ -1,5 +1,6 @@
 /target
 /log
+metrics.db*
 
 build.log
 build_error.log

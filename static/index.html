@@ -16,6 +16,41 @@
   </div>
   <div id="status">Ready.</div>
 
+  <div class="metrics-header">
+    <h2 style="margin: 0;">Metrics</h2>
+    <div class="time-window-selector">
+      <label for="time-window">Window:</label>
+      <select id="time-window" onchange="onTimeWindowChange()">
+        <option value="1m">1 minute</option>
+        <option value="5m">5 minutes</option>
+        <option value="15m">15 minutes</option>
+        <option value="1h" selected>1 hour</option>
+        <option value="6h">6 hours</option>
+        <option value="12h">12 hours</option>
+        <option value="24h">24 hours</option>
+      </select>
+    </div>
+  </div>
+
+  <div id="stats-container">
+    <div class="stat-card">
+      <span class="stat-value" id="stat-requests">-</span>
+      <span class="stat-label" id="label-requests">Requests</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-value" id="stat-latency">-</span>
+      <span class="stat-label">Avg Latency</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-value" id="stat-errors">-</span>
+      <span class="stat-label">Error Rate</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-value" id="stat-cost">-</span>
+      <span class="stat-label" id="label-cost">Est. Cost</span>
+    </div>
+  </div>
+
   <h2>Transaction Log</h2>
   <div id="transactions"><p style="color:#475569">Loading…</p></div>
   <p class="hint">Auto-refreshes every 3 s</p>

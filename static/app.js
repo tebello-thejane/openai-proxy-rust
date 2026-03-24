@@ -278,6 +278,7 @@ function connectWebSocket() {
     try {
       const tx = JSON.parse(event.data);
       prependTransaction(tx);
+      updateStatsFromTransaction(tx);
     } catch(e) {
       console.error('Failed to parse WS message:', e);
     }
@@ -295,6 +296,111 @@ function connectWebSocket() {
   };
 }
 
-// Initialize: load existing transactions, then connect WebSocket for live updates
+// Metrics functions with time window support
+let lastDashboardStats = null;
+let currentTimeWindow = '1h';
+
+// Time window labels for display
+const timeWindowLabels = {
+  '1m': '1 minute',
+  '5m': '5 minutes',
+  '15m': '15 minutes',
+  '1h': '1 hour',
+  '6h': '6 hours',
+  '12h': '12 hours',
+  '24h': '24 hours'
+};
+
+function getCurrentTimeWindow() {
+  const select = document.getElementById('time-window');
+  return select ? select.value : '1h';
+}
+
+function onTimeWindowChange() {
+  currentTimeWindow = getCurrentTimeWindow();
+  loadDashboardStats();
+  updateLabels();
+}
+
+function updateLabels() {
+  const windowLabel = timeWindowLabels[currentTimeWindow] || 'selected window';
+  const requestsLabel = document.getElementById('label-requests');
+  const costLabel = document.getElementById('label-cost');
+
+  if (requestsLabel) requestsLabel.textContent = `Requests (${windowLabel})`;
+  if (costLabel) costLabel.textContent = 'Est. Cost';
+}
+
+async function loadDashboardStats() {
+  try {
+    const window = getCurrentTimeWindow();
+    const r = await fetch(`/api/metrics/dashboard/v2?window=${window}`);
+    const stats = await r.json();
+    lastDashboardStats = stats;
+    renderStats(stats);
+  } catch(e) {
+    console.error('Failed to load dashboard stats:', e);
+  }
+}
+
+function renderStats(stats) {
+  if (!stats) return;
+
+  // Handle v2 format: { current: { window, stats }, per_model }
+  const current = stats.current?.stats || stats.last_hour || {};
+
+  document.getElementById('stat-requests').textContent = current.requests !== undefined ? current.requests : '-';
+  document.getElementById('stat-latency').textContent = current.avg_latency_ms !== undefined
+    ? Math.round(current.avg_latency_ms) + ' ms'
+    : '-';
+  document.getElementById('stat-errors').textContent = current.error_rate !== undefined
+    ? current.error_rate.toFixed(1) + '%'
+    : '-';
+  document.getElementById('stat-cost').textContent = current.estimated_cost !== undefined
+    ? '$' + current.estimated_cost.toFixed(4)
+    : '-';
+}
+
+function updateStatsFromTransaction(tx) {
+  // Optimistic update on WebSocket message
+  if (!lastDashboardStats) return;
+
+  const res = tx.response || {};
+  const status = res.status || 0;
+  const latency = res.latency_ms || 0;
+
+  // Get current stats (handle both v1 and v2 formats)
+  const current = lastDashboardStats.current?.stats || lastDashboardStats.last_hour || {};
+
+  // Update current window stats
+  current.requests = (current.requests || 0) + 1;
+  const totalLatency = (current.avg_latency_ms || 0) * (current.requests - 1) + latency;
+  current.avg_latency_ms = totalLatency / current.requests;
+
+  if (status >= 400) {
+    const errors = (current.error_rate || 0) * (current.requests - 1) / 100 + 1;
+    current.error_rate = (errors / current.requests) * 100;
+  }
+
+  // Also update legacy format if present
+  if (lastDashboardStats.last_hour) {
+    lastDashboardStats.last_hour.requests = (lastDashboardStats.last_hour.requests || 0) + 1;
+  }
+  if (lastDashboardStats.today) {
+    lastDashboardStats.today.requests = (lastDashboardStats.today.requests || 0) + 1;
+  }
+
+  renderStats(lastDashboardStats);
+}
+
+// Initialize: load existing transactions and metrics, then connect WebSocket for live updates
+currentTimeWindow = getCurrentTimeWindow();
+updateLabels();
 loadTransactions();
+loadDashboardStats();
 connectWebSocket();
+
+// Refresh metrics every 10 seconds
+setInterval(() => {
+  loadDashboardStats();
+}, 10000);
