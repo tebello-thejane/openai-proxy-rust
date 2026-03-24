@@ -14,6 +14,7 @@ pub struct TransactionMetrics {
     pub latency_ms: i64,
     pub prompt_tokens: i64,
     pub completion_tokens: i64,
+    pub cost: f64,
     pub timestamp: DateTime<Utc>,
 }
 
@@ -22,7 +23,7 @@ pub struct WindowStats {
     pub requests: i64,
     pub avg_latency_ms: f64,
     pub error_rate: f64,
-    pub estimated_cost: f64,
+    pub cost: f64,
     pub total_tokens: i64,
 }
 
@@ -137,32 +138,6 @@ pub struct ChartDataPoint {
     pub requests: i64,
 }
 
-fn normalize_model(model: &str) -> String {
-    model.split(':').next().unwrap_or(model).to_string()
-}
-
-fn estimate_cost(model: &str, prompt_tokens: i64, completion_tokens: i64) -> f64 {
-    let normalized = normalize_model(model);
-    match normalized.as_str() {
-        "gpt-4o" => {
-            (prompt_tokens as f64 * 0.005 + completion_tokens as f64 * 0.015) / 1000.0
-        }
-        "gpt-4o-mini" => {
-            (prompt_tokens as f64 * 0.00015 + completion_tokens as f64 * 0.0006) / 1000.0
-        }
-        "gpt-4" => {
-            (prompt_tokens as f64 * 0.03 + completion_tokens as f64 * 0.06) / 1000.0
-        }
-        "gpt-4-turbo" | "gpt-4-turbo-preview" => {
-            (prompt_tokens as f64 * 0.01 + completion_tokens as f64 * 0.03) / 1000.0
-        }
-        "gpt-3.5-turbo" | "gpt-3.5-turbo-0125" | "gpt-3.5-turbo-1106" => {
-            (prompt_tokens as f64 * 0.0005 + completion_tokens as f64 * 0.0015) / 1000.0
-        }
-        _ => 0.0,
-    }
-}
-
 fn hour_bucket(ts: DateTime<Utc>) -> i64 {
     ts.timestamp() / 3600 * 3600
 }
@@ -223,7 +198,7 @@ impl MetricsDb {
     pub async fn record_transaction(&self, tx: &TransactionMetrics) -> Result<(), sqlx::Error> {
         let hb = hour_bucket(tx.timestamp);
         let date = date_bucket(tx.timestamp);
-        let cost = estimate_cost(&tx.model, tx.prompt_tokens, tx.completion_tokens);
+        let cost = tx.cost;
 
         let is_4xx = tx.status >= 400 && tx.status < 500;
         let is_5xx = tx.status >= 500;
@@ -323,7 +298,7 @@ impl MetricsDb {
                 0.0
             },
             error_rate: if row.0 > 0 { row.2 as f64 / row.0 as f64 * 100.0 } else { 0.0 },
-            estimated_cost: row.3,
+            cost: row.3,
             total_tokens: 0,
         };
 
@@ -350,7 +325,7 @@ impl MetricsDb {
                 0.0
             },
             error_rate: if row.0 > 0 { row.2 as f64 / row.0 as f64 * 100.0 } else { 0.0 },
-            estimated_cost: row.3,
+            cost: row.3,
             total_tokens: 0,
         };
 
@@ -375,7 +350,7 @@ impl MetricsDb {
                 0.0
             },
             error_rate: if row.0 > 0 { row.2 as f64 / row.0 as f64 * 100.0 } else { 0.0 },
-            estimated_cost: row.3,
+            cost: row.3,
             total_tokens: 0,
         };
 
@@ -482,7 +457,7 @@ impl MetricsDb {
             } else {
                 0.0
             },
-            estimated_cost: row.3,
+            cost: row.3,
             total_tokens: row.4,
         })
     }
@@ -588,7 +563,7 @@ pub fn extract_metrics_from_transaction(tx_json: &Value) -> Option<TransactionMe
         .unwrap_or("unknown")
         .to_string();
 
-    let (prompt_tokens, completion_tokens) = if let Some(usage) = resp_body.get("usage") {
+    let (prompt_tokens, completion_tokens, cost) = if let Some(usage) = resp_body.get("usage") {
         let prompt = usage
             .get("prompt_tokens")
             .and_then(|t| t.as_u64())
@@ -597,9 +572,13 @@ pub fn extract_metrics_from_transaction(tx_json: &Value) -> Option<TransactionMe
             .get("completion_tokens")
             .and_then(|t| t.as_u64())
             .unwrap_or(0) as i64;
-        (prompt, completion)
+        let cost = usage
+            .get("cost")
+            .and_then(|c| c.as_f64())
+            .unwrap_or(0.0);
+        (prompt, completion, cost)
     } else {
-        (0, 0)
+        (0, 0, 0.0)
     };
 
     Some(TransactionMetrics {
@@ -608,6 +587,7 @@ pub fn extract_metrics_from_transaction(tx_json: &Value) -> Option<TransactionMe
         latency_ms,
         prompt_tokens,
         completion_tokens,
+        cost,
         timestamp,
     })
 }

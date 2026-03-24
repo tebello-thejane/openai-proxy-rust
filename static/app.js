@@ -328,7 +328,7 @@ function updateLabels() {
   const costLabel = document.getElementById('label-cost');
 
   if (requestsLabel) requestsLabel.textContent = `Requests (${windowLabel})`;
-  if (costLabel) costLabel.textContent = 'Est. Cost';
+  if (costLabel) costLabel.textContent = 'Cost';
 }
 
 async function loadDashboardStats() {
@@ -356,8 +356,8 @@ function renderStats(stats) {
   document.getElementById('stat-errors').textContent = current.error_rate !== undefined
     ? current.error_rate.toFixed(1) + '%'
     : '-';
-  document.getElementById('stat-cost').textContent = current.estimated_cost !== undefined
-    ? '$' + current.estimated_cost.toFixed(4)
+  document.getElementById('stat-cost').textContent = current.cost !== undefined
+    ? '$' + current.cost.toFixed(4)
     : '-';
 }
 
