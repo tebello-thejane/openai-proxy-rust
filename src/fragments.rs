@@ -163,7 +163,7 @@ pub fn render_stats(stats: &WindowStats, window: &str) -> Markup {
     html! {
         div id="stats-container"
             "hx-get"=(hx_get)
-            "hx-trigger"="every 10s"
+            "hx-trigger"="every 10s, refresh"
             "hx-swap"="outerHTML"
         {
             div class="stat-card" {
