@@ -26,10 +26,14 @@ async fn handle_socket(mut socket: WebSocket, tx: Arc<TxBroadcast>) {
         tokio::select! {
             result = rx.recv() => {
                 match result {
-                    Ok(msg) => {
-                        if socket.send(Message::Text(msg)).await.is_err() {
-                            break;
+                    Ok(json_str) => {
+                        if let Ok(tx_value) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                            let html = crate::fragments::render_new_tx_card(&tx_value).into_string();
+                            if socket.send(Message::Text(html)).await.is_err() {
+                                break;
+                            }
                         }
+                        // If JSON parsing fails, skip silently (don't send malformed data to browser)
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         info!("WebSocket client lagged by {} messages", n);
