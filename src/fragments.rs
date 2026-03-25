@@ -205,7 +205,7 @@ pub fn render_new_tx_card(tx: &Value) -> Markup {
     let timestamp = tx["timestamp"].as_str().unwrap_or("").to_string();
     let method = tx["request"]["method"].as_str().map(|s| s.to_string());
     let status = tx["response"]["status"].as_u64().map(|n| n as u16);
-    let latency_ms = tx["response"]["latency_ms"].as_u64();
+    let latency_ms = tx["response"]["latency_ms"].as_f64().map(|n| n as u64);
 
     let summary = TransactionSummary {
         id,
@@ -239,7 +239,7 @@ pub async fn fragment_transactions() -> Markup {
                     let timestamp = val["timestamp"].as_str().unwrap_or("").to_string();
                     let method = val["request"]["method"].as_str().map(|s| s.to_string());
                     let status = val["response"]["status"].as_u64().map(|n| n as u16);
-                    let latency_ms = val["response"]["latency_ms"].as_u64();
+                    let latency_ms = val["response"]["latency_ms"].as_f64().map(|n| n as u64);
 
                     summaries.push(TransactionSummary {
                         id,
