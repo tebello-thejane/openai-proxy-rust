@@ -271,15 +271,25 @@ pub async fn fragment_tx_detail(
                 .and_then(|n| n.to_str())
                 .unwrap_or("");
             if filename.ends_with(&format!("_{}.json", id)) {
-                if let Ok(contents) = fs::read_to_string(&path).await {
-                    if let Ok(tx) = serde_json::from_str::<Value>(&contents) {
-                        let section = match params.section.as_deref() {
-                            Some("request") => DetailSection::Request,
-                            _ => DetailSection::Response,
-                        };
-                        return Ok(render_tx_detail(&tx, section));
+                let contents = match fs::read_to_string(&path).await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!("Failed to read transaction file {:?}: {}", path, e);
+                        continue;
                     }
-                }
+                };
+                let tx = match serde_json::from_str::<Value>(&contents) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!("Failed to parse transaction file {:?}: {}", path, e);
+                        continue;
+                    }
+                };
+                let section = match params.section.as_deref() {
+                    Some("request") => DetailSection::Request,
+                    _ => DetailSection::Response,
+                };
+                return Ok(render_tx_detail(&tx, section));
             }
         }
     }
