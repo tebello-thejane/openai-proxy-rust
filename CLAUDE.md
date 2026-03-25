@@ -94,7 +94,7 @@ Defined in `main.rs`, injected into all handlers via Axum state:
 ## Module Responsibilities
 
 ### `src/main.rs`
-- CLI parsing via `clap`: `--port` (default 3000), `--dest` (default OpenAI endpoint)
+- CLI parsing via `clap`: `--port` (default 3000), `--dest` (default `https://api.openai.com/v1/chat/completions` — the full upstream endpoint URL, used directly as the POST target)
 - `dotenv` loading for environment variables
 - Tracing/logging initialization
 - SQLite database initialization
@@ -164,6 +164,8 @@ Defined in `main.rs`, injected into all handlers via Axum state:
 | `GET` | `/ws` | `ws.rs` | WebSocket upgrade |
 | `GET` | `/test` | inline | Health check → `"ok"` |
 | `GET` | `/api/transactions` | `ui.rs` | List all logged transactions |
+| `GET` | `/api/transactions/summary` | `ui.rs` | List transactions as lightweight summaries (id, timestamp, method, status, latency_ms) |
+| `GET` | `/api/transactions/:id` | `ui.rs` | Fetch full transaction JSON by UUID |
 | `GET` | `/api/transactions/:id/conversation` | `download.rs` | Download conversation as Markdown |
 | `GET` | `/api/transactions/:id/response` | `download.rs` | Download response as Markdown |
 | `GET` | `/api/metrics/dashboard` | `ui.rs` | Dashboard stats (v1) |

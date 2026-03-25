@@ -8,8 +8,8 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
-use tracing::{info, Level};
-use tracing_subscriber::FmtSubscriber;
+use tracing::info;
+use tracing_subscriber::EnvFilter;
 use clap::Parser;
 
 mod download;
@@ -46,11 +46,15 @@ async fn main() {
     // Parse CLI arguments
     let cli = Cli::parse();
 
-    // 1. Initialize Logging (Stdout only for now, file logging handled per request)
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::INFO)
-        .finish();
-    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+    // Load .env file if present (silently ignore if missing)
+    dotenv::dotenv().ok();
+
+    // 1. Initialize Logging — respects RUST_LOG env var, defaults to info
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
 
     // Ensure log directory exists (idempotent, no TOCTOU race)
     std::fs::create_dir_all("log").ok();
@@ -86,6 +90,8 @@ async fn main() {
     let app = Router::new()
         .route("/", get(serve_index))
         .route("/api/transactions", get(ui::list_transactions))
+        .route("/api/transactions/summary", get(ui::list_transactions_summary))
+        .route("/api/transactions/:id", get(ui::get_transaction))
         .route("/api/transactions/:id/conversation", get(download::download_conversation))
         .route("/api/transactions/:id/response", get(download::download_response))
         .route("/api/metrics/dashboard", get(ui::get_dashboard_stats))
