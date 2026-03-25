@@ -13,6 +13,7 @@ use tracing_subscriber::EnvFilter;
 use clap::Parser;
 
 mod download;
+mod fragments;
 mod logging;
 mod metrics;
 mod proxy;
