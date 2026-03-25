@@ -1,4 +1,5 @@
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
 use axum::Json;
 use serde_json::Value;
 use tokio::fs;
@@ -35,6 +36,65 @@ pub async fn list_transactions() -> Json<Vec<Value>> {
     });
 
     Json(entries)
+}
+
+pub async fn list_transactions_summary() -> Json<Vec<Value>> {
+    let mut summaries = Vec::new();
+
+    if let Ok(mut dir) = fs::read_dir("log").await {
+        while let Ok(Some(entry)) = dir.next_entry().await {
+            let path = entry.path();
+            let is_json = path.extension().and_then(|e| e.to_str()) == Some("json");
+            if !is_json {
+                continue;
+            }
+            if let Ok(contents) = fs::read_to_string(&path).await {
+                if let Ok(val) = serde_json::from_str::<Value>(&contents) {
+                    let summary = serde_json::json!({
+                        "id": val.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                        "timestamp": val.get("timestamp").and_then(|v| v.as_str()).unwrap_or(""),
+                        "method": val.get("request").and_then(|r| r.get("method")).and_then(|v| v.as_str()).unwrap_or(""),
+                        "status": val.get("response").and_then(|r| r.get("status")).and_then(|v| v.as_u64()).unwrap_or(0),
+                        "latency_ms": val.get("response").and_then(|r| r.get("latency_ms")).and_then(|v| v.as_u64()).unwrap_or(0),
+                    });
+                    summaries.push(summary);
+                }
+            }
+        }
+    }
+
+    // Sort newest-first by timestamp
+    summaries.sort_by(|a, b| {
+        let ta = a.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
+        let tb = b.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
+        tb.cmp(ta)
+    });
+
+    Json(summaries)
+}
+
+pub async fn get_transaction(
+    Path(id): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    if let Ok(mut dir) = fs::read_dir("log").await {
+        while let Ok(Some(entry)) = dir.next_entry().await {
+            let path = entry.path();
+            let filename = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+            let matches = filename.ends_with(&format!("_{}.json", id));
+            if matches {
+                if let Ok(contents) = fs::read_to_string(&path).await {
+                    if let Ok(val) = serde_json::from_str::<Value>(&contents) {
+                        return Ok(Json(val));
+                    }
+                }
+            }
+        }
+    }
+
+    Err(StatusCode::NOT_FOUND)
 }
 
 pub async fn get_dashboard_stats(
