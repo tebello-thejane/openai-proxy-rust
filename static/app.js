@@ -38,8 +38,13 @@ async function sendTestMessage() {
 
 function fmtTs(ts) {
   if (!ts) return '?';
-  const d = new Date(ts);
-  return d.toLocaleString();
+  // Extract date-time and timezone from ISO 8601 (e.g., 2026-03-25T20:34:09+00:00 or 2026-03-25T20:34:09.638351441Z)
+  const match = ts.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?([+-]\d{2}:\d{2}|Z)$/);
+  if (match) {
+    const [, datetime, tz] = match;
+    return datetime.replace('T', ' ') + ' ' + tz;
+  }
+  return ts.replace('T', ' ').replace(/(\.\d+)?(Z|[+-].*)$/, '').trim();
 }
 
 function statusClass(code) {
@@ -130,51 +135,23 @@ async function downloadResponse(tx) {
   }
 }
 
-function attachCopyHandlersToCard(card) {
-  card.querySelectorAll('.response-details pre, .request-details pre').forEach(pre => {
-    if (!pre.dataset.copyAttached) {
-      pre.style.cursor = 'pointer';
-      const label = pre.closest('.response-details') ? 'response body' : 'request body';
-      pre.addEventListener('click', () => copyToClipboard(pre.textContent, label));
-      pre.dataset.copyAttached = 'true';
-    }
-  });
-  card.querySelectorAll('.download-md').forEach(btn => {
-    btn.addEventListener('click', (e) => e.stopPropagation());
-  });
-}
-
-function createDetailsSection(className, summaryText, preContent, downloadBtn) {
-  const details = document.createElement('details');
-  details.className = className;
-
-  const summary = document.createElement('summary');
-  summary.textContent = summaryText;
-  details.appendChild(summary);
-
-  const content = document.createElement('div');
-  content.className = 'detail-content';
-
-  if (downloadBtn) {
-    content.appendChild(downloadBtn);
-  }
-
-  const pre = document.createElement('pre');
-  pre.textContent = preContent;
-  content.appendChild(pre);
-
-  details.appendChild(content);
-  return details;
-}
 
 function createTxCard(tx) {
-  const req = tx.request || {};
-  const res = tx.response || {};
+  // Handle both full transaction (from WebSocket) and summary (from API)
   const txId = tx.id || '';
+  const method = tx.method || tx.request?.method || '?';
+  const status = tx.status ?? tx.response?.status;
+  const latencyMs = tx.latency_ms ?? tx.response?.latency_ms;
+  const timestamp = tx.timestamp;
 
   const card = document.createElement('div');
   card.className = 'tx-card';
   card.dataset.txId = txId;
+  card.dataset.loaded = 'false';
+  // Pre-cache if this is a full transaction (from WebSocket)
+  if (tx.request && tx.response) {
+    card._cachedTx = tx;
+  }
 
   // Header row
   const header = document.createElement('div');
@@ -182,19 +159,19 @@ function createTxCard(tx) {
 
   const tsSpan = document.createElement('span');
   tsSpan.className = 'ts';
-  tsSpan.textContent = fmtTs(tx.timestamp);
+  tsSpan.textContent = fmtTs(timestamp);
 
   const methodSpan = document.createElement('span');
   methodSpan.className = 'method';
-  methodSpan.textContent = req.method || '?';
+  methodSpan.textContent = method;
 
   const statusSpan = document.createElement('span');
-  statusSpan.className = statusClass(res.status);
-  statusSpan.textContent = String(res.status || '?');
+  statusSpan.className = statusClass(status);
+  statusSpan.textContent = String(status || '?');
 
   const latencySpan = document.createElement('span');
   latencySpan.className = 'latency';
-  latencySpan.textContent = res.latency_ms != null ? res.latency_ms + ' ms' : '';
+  latencySpan.textContent = latencyMs != null ? latencyMs + ' ms' : '';
 
   header.appendChild(tsSpan);
   header.appendChild(methodSpan);
@@ -202,39 +179,135 @@ function createTxCard(tx) {
   header.appendChild(latencySpan);
   card.appendChild(header);
 
-  // Response details
-  const respBtn = document.createElement('button');
-  respBtn.className = 'download-md';
-  respBtn.textContent = '⬇ Response.md';
-  respBtn.addEventListener('click', (e) => { e.stopPropagation(); downloadResponse(tx); });
+  // Helper to create lazy-loaded details section
+  function createLazyDetailsSection(className, summaryText, placeholderText) {
+    const details = document.createElement('details');
+    details.className = className;
 
-  card.appendChild(createDetailsSection(
+    const sum = document.createElement('summary');
+    sum.textContent = summaryText;
+    details.appendChild(sum);
+
+    const content = document.createElement('div');
+    content.className = 'detail-content';
+
+    const placeholder = document.createElement('p');
+    placeholder.className = 'detail-placeholder';
+    placeholder.textContent = placeholderText;
+    placeholder.style.color = '#64748b';
+    content.appendChild(placeholder);
+
+    details.appendChild(content);
+
+    // Fetch full transaction when opened
+    details.addEventListener('toggle', async function() {
+      if (this.open && !this.dataset.loaded) {
+        const card = this.closest('.tx-card');
+        const isResponse = className === 'response-details';
+
+        // Check if already cached in another section
+        const cached = card?._cachedTx;
+        if (cached) {
+          this.dataset.loaded = 'true';
+          const req = cached.request || {};
+          const res = cached.response || {};
+
+          content.innerHTML = '';
+
+          const btn = document.createElement('button');
+          btn.className = 'download-md';
+          btn.textContent = isResponse ? '⬇ Response.md' : '⬇ Conversation.md';
+          btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (isResponse) downloadResponse(cached);
+            else downloadConversation(cached);
+          });
+          content.appendChild(btn);
+
+          const pre = document.createElement('pre');
+          pre.textContent = JSON.stringify(
+            isResponse ? res.body : req.body,
+            null, 2
+          );
+          content.appendChild(pre);
+          pre.style.cursor = 'pointer';
+          pre.addEventListener('click', () => copyToClipboard(
+            pre.textContent,
+            isResponse ? 'response body' : 'request body'
+          ));
+          return;
+        }
+
+        placeholder.textContent = 'Loading...';
+        try {
+          const r = await fetch('/api/transactions/' + txId);
+          const fullTx = await r.json();
+
+          if (fullTx && fullTx.id) {
+            this.dataset.loaded = 'true';
+            if (card) {
+              card.dataset.loaded = 'true';
+              card._cachedTx = fullTx;
+            }
+            const req = fullTx.request || {};
+            const res = fullTx.response || {};
+
+            // Clear placeholder
+            content.innerHTML = '';
+
+            // Add download button and content
+            const btn = document.createElement('button');
+            btn.className = 'download-md';
+            btn.textContent = isResponse ? '⬇ Response.md' : '⬇ Conversation.md';
+            btn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              if (isResponse) downloadResponse(fullTx);
+              else downloadConversation(fullTx);
+            });
+            content.appendChild(btn);
+
+            const pre = document.createElement('pre');
+            pre.textContent = JSON.stringify(
+              isResponse ? res.body : req.body,
+              null, 2
+            );
+            content.appendChild(pre);
+            pre.style.cursor = 'pointer';
+            pre.addEventListener('click', () => copyToClipboard(
+              pre.textContent,
+              isResponse ? 'response body' : 'request body'
+            ));
+          }
+        } catch(e) {
+          placeholder.textContent = 'Failed to load: ' + e.message;
+        }
+      }
+    });
+
+    return details;
+  }
+
+  // Response details (closed by default)
+  card.appendChild(createLazyDetailsSection(
     'response-details',
     'Response body',
-    JSON.stringify(res.body, null, 2),
-    respBtn
+    'Click to load...'
   ));
 
-  // Request details
-  const reqBtn = document.createElement('button');
-  reqBtn.className = 'download-md';
-  reqBtn.textContent = '⬇ Conversation.md';
-  reqBtn.addEventListener('click', (e) => { e.stopPropagation(); downloadConversation(tx); });
-
-  card.appendChild(createDetailsSection(
+  // Request details (closed by default)
+  card.appendChild(createLazyDetailsSection(
     'request-details',
     'Request body',
-    JSON.stringify(req.body, null, 2),
-    reqBtn
+    'Click to load...'
   ));
 
   return card;
 }
 
-// Load existing transactions on page load via HTTP
+// Load existing transactions on page load via HTTP (summary only)
 async function loadTransactions() {
   try {
-    const r = await fetch('/api/transactions');
+    const r = await fetch('/api/transactions/summary');
     const txs = await r.json();
     const el = document.getElementById('transactions');
     if (!txs.length) {
@@ -245,7 +318,6 @@ async function loadTransactions() {
     for (const tx of txs) {
       el.appendChild(createTxCard(tx));
     }
-    el.querySelectorAll('.tx-card').forEach(card => attachCopyHandlersToCard(card));
   } catch(e) {
     // silently ignore load errors
   }
@@ -260,7 +332,6 @@ function prependTransaction(tx) {
 
   const card = createTxCard(tx);
   el.prepend(card);
-  attachCopyHandlersToCard(card);
 }
 
 // WebSocket connection with auto-reconnect
@@ -328,7 +399,7 @@ function updateLabels() {
   const costLabel = document.getElementById('label-cost');
 
   if (requestsLabel) requestsLabel.textContent = `Requests (${windowLabel})`;
-  if (costLabel) costLabel.textContent = 'Cost';
+  if (costLabel) costLabel.textContent = `Cost (${windowLabel})`;
 }
 
 async function loadDashboardStats() {

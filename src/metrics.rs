@@ -3,6 +3,29 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{sqlite::SqlitePoolOptions, Pool, Sqlite};
 
+/// Cost per 1K tokens (prompt, completion) for various models
+/// Prices sourced from OpenAI API pricing (as of 2024)
+static COST_PER_1K: &[(&str, f64, f64)] = &[
+    ("gpt-4o", 0.005, 0.015),
+    ("gpt-4o-mini", 0.00015, 0.0006),
+    ("gpt-4-turbo", 0.01, 0.03),
+    ("gpt-4", 0.03, 0.06),
+    ("gpt-3.5-turbo", 0.0005, 0.0015),
+];
+
+fn compute_cost(model: &str, prompt_tokens: i64, completion_tokens: i64) -> f64 {
+    let model_lower = model.to_lowercase();
+    for (prefix, prompt_price, completion_price) in COST_PER_1K {
+        if model_lower.contains(prefix) {
+            let prompt_cost = (prompt_tokens as f64 / 1000.0) * prompt_price;
+            let completion_cost = (completion_tokens as f64 / 1000.0) * completion_price;
+            return prompt_cost + completion_cost;
+        }
+    }
+    // Default to gpt-3.5-turbo pricing for unknown models
+    (prompt_tokens as f64 / 1000.0) * 0.0005 + (completion_tokens as f64 / 1000.0) * 0.0015
+}
+
 pub struct MetricsDb {
     pool: Pool<Sqlite>,
 }
@@ -212,7 +235,7 @@ impl MetricsDb {
                 latency_min, latency_max, latency_sum, latency_count,
                 prompt_tokens, completion_tokens, estimated_cost
             )
-            VALUES (?, ?, 1, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+            VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(hour_bucket, model) DO UPDATE SET
                 requests = requests + 1,
                 errors_4xx = errors_4xx + excluded.errors_4xx,
@@ -228,7 +251,7 @@ impl MetricsDb {
                     ELSE metrics_hourly.latency_max
                 END,
                 latency_sum = latency_sum + excluded.latency_sum,
-                latency_count = latency_count + 1,
+                latency_count = latency_count + excluded.latency_count,
                 prompt_tokens = prompt_tokens + excluded.prompt_tokens,
                 completion_tokens = completion_tokens + excluded.completion_tokens,
                 estimated_cost = estimated_cost + excluded.estimated_cost
@@ -241,6 +264,7 @@ impl MetricsDb {
         .bind(tx.latency_ms)
         .bind(tx.latency_ms)
         .bind(tx.latency_ms)
+        .bind(1i64)
         .bind(tx.prompt_tokens)
         .bind(tx.completion_tokens)
         .bind(cost)
@@ -275,13 +299,14 @@ impl MetricsDb {
         let today_start_ts = today_start_ts.timestamp();
         let hour_ago_bucket = hour_bucket(hour_ago);
 
-        let row: (i64, Option<i64>, i64, f64) = sqlx::query_as(
+        let row: (i64, Option<i64>, i64, f64, i64) = sqlx::query_as(
             r#"
             SELECT
                 COALESCE(SUM(requests), 0),
                 COALESCE(SUM(latency_sum), 0),
                 COALESCE(SUM(errors_4xx + errors_5xx), 0),
-                COALESCE(SUM(estimated_cost), 0.0)
+                COALESCE(SUM(estimated_cost), 0.0),
+                COALESCE(SUM(prompt_tokens + completion_tokens), 0)
             FROM metrics_hourly
             WHERE hour_bucket >= ?
             "#,
@@ -299,16 +324,17 @@ impl MetricsDb {
             },
             error_rate: if row.0 > 0 { row.2 as f64 / row.0 as f64 * 100.0 } else { 0.0 },
             cost: row.3,
-            total_tokens: 0,
+            total_tokens: row.4,
         };
 
-        let row: (i64, Option<i64>, i64, f64) = sqlx::query_as(
+        let row: (i64, Option<i64>, i64, f64, i64) = sqlx::query_as(
             r#"
             SELECT
                 COALESCE(SUM(requests), 0),
                 COALESCE(SUM(latency_sum), 0),
                 COALESCE(SUM(errors_4xx + errors_5xx), 0),
-                COALESCE(SUM(estimated_cost), 0.0)
+                COALESCE(SUM(estimated_cost), 0.0),
+                COALESCE(SUM(prompt_tokens + completion_tokens), 0)
             FROM metrics_hourly
             WHERE hour_bucket >= ?
             "#,
@@ -326,16 +352,17 @@ impl MetricsDb {
             },
             error_rate: if row.0 > 0 { row.2 as f64 / row.0 as f64 * 100.0 } else { 0.0 },
             cost: row.3,
-            total_tokens: 0,
+            total_tokens: row.4,
         };
 
-        let row: (i64, Option<i64>, i64, f64) = sqlx::query_as(
+        let row: (i64, Option<i64>, i64, f64, i64) = sqlx::query_as(
             r#"
             SELECT
                 COALESCE(SUM(requests), 0),
                 COALESCE(SUM(latency_sum), 0),
                 COALESCE(SUM(errors_4xx + errors_5xx), 0),
-                COALESCE(SUM(estimated_cost), 0.0)
+                COALESCE(SUM(estimated_cost), 0.0),
+                COALESCE(SUM(prompt_tokens + completion_tokens), 0)
             FROM metrics_hourly
             "#,
         )
@@ -351,7 +378,7 @@ impl MetricsDb {
             },
             error_rate: if row.0 > 0 { row.2 as f64 / row.0 as f64 * 100.0 } else { 0.0 },
             cost: row.3,
-            total_tokens: 0,
+            total_tokens: row.4,
         };
 
         let model_rows: Vec<(String, i64, i64, f64)> = sqlx::query_as(
@@ -469,7 +496,6 @@ impl MetricsDb {
         let now = Utc::now();
         let start_time = now - Duration::seconds(window.as_seconds());
         let start_timestamp = start_time.timestamp();
-        let _bucket_secs = window.bucket_seconds() as i64;
 
         // For sub-hour buckets, we need to aggregate from the hourly data
         // Since we're storing hourly buckets, we'll distribute the data
@@ -493,14 +519,7 @@ impl MetricsDb {
             .into_iter()
             .map(|(bucket, requests)| {
                 let dt = DateTime::from_timestamp(bucket, 0).unwrap_or_else(|| Utc::now());
-                // Format label based on window size
-                let label = match window {
-                    TimeWindow::Minutes1 |
-                    TimeWindow::Minutes5 |
-                    TimeWindow::Minutes15 |
-                    TimeWindow::Hours1 => dt.format("%H:%M").to_string(),
-                    _ => dt.format("%H:%M").to_string(),
-                };
+                let label = dt.format("%H:%M").to_string();
                 ChartDataPoint { label, requests }
             })
             .collect();
@@ -563,7 +582,7 @@ pub fn extract_metrics_from_transaction(tx_json: &Value) -> Option<TransactionMe
         .unwrap_or("unknown")
         .to_string();
 
-    let (prompt_tokens, completion_tokens, cost) = if let Some(usage) = resp_body.get("usage") {
+    let (prompt_tokens, completion_tokens) = if let Some(usage) = resp_body.get("usage") {
         let prompt = usage
             .get("prompt_tokens")
             .and_then(|t| t.as_u64())
@@ -572,14 +591,13 @@ pub fn extract_metrics_from_transaction(tx_json: &Value) -> Option<TransactionMe
             .get("completion_tokens")
             .and_then(|t| t.as_u64())
             .unwrap_or(0) as i64;
-        let cost = usage
-            .get("cost")
-            .and_then(|c| c.as_f64())
-            .unwrap_or(0.0);
-        (prompt, completion, cost)
+        (prompt, completion)
     } else {
-        (0, 0, 0.0)
+        (0, 0)
     };
+
+    // Compute cost from token counts using the cost table
+    let cost = compute_cost(&model, prompt_tokens, completion_tokens);
 
     Some(TransactionMetrics {
         model,
