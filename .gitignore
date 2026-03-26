@@ -6,4 +6,5 @@ build.log
 build_error.log
 
 .idea/
+.worktrees/
 

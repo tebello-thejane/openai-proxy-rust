@@ -26,9 +26,17 @@ async fn handle_socket(mut socket: WebSocket, tx: Arc<TxBroadcast>) {
         tokio::select! {
             result = rx.recv() => {
                 match result {
-                    Ok(msg) => {
-                        if socket.send(Message::Text(msg)).await.is_err() {
-                            break;
+                    Ok(json_str) => {
+                        match serde_json::from_str::<serde_json::Value>(&json_str) {
+                            Ok(tx_value) => {
+                                let html = crate::fragments::render_new_tx_card(&tx_value).into_string();
+                                if socket.send(Message::Text(html)).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!("ws: failed to parse broadcast JSON: {}", e);
+                            }
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {

@@ -11,8 +11,21 @@
 
   <div class="controls">
     <input type="text" id="apiKey" placeholder="OpenAI API key (sk-…)" />
-    <button onclick="pingTest()">Ping /test</button>
-    <button onclick="sendTestMessage()">Send Test Message</button>
+    <button _="on click
+      fetch /test then get the result as text then
+      put it into #status">Ping /test</button>
+    <button _="on click
+      set key to #apiKey.value
+      if key is empty
+        put 'Please enter an API key first.' into #status
+      else
+        put 'Sending…' into #status
+        fetch /v1/chat/completions with method:'POST',
+          headers:{'Authorization': 'Bearer '+key, 'Content-Type':'application/json'},
+          body: JSON.stringify({model:'gpt-4o-mini', messages:[{role:'user',content:'Say hi.'}]})
+        then get the result as json then
+        put JSON.stringify(it, null, 2) into #status
+      end">Send Test Message</button>
   </div>
   <div id="status">Ready.</div>
 
@@ -20,7 +33,11 @@
     <h2 style="margin: 0;">Metrics</h2>
     <div class="time-window-selector">
       <label for="time-window">Window:</label>
-      <select id="time-window" onchange="onTimeWindowChange()">
+      <select id="time-window"
+        _="on change
+          set the @hx-get of #stats-container to
+            '/fragments/stats?window=' + my.value
+          then htmx.trigger(#stats-container, 'refresh')">
         <option value="1m">1 minute</option>
         <option value="5m">5 minutes</option>
         <option value="15m">15 minutes</option>
@@ -32,29 +49,25 @@
     </div>
   </div>
 
-  <div id="stats-container">
-    <div class="stat-card">
-      <span class="stat-value" id="stat-requests">-</span>
-      <span class="stat-label" id="label-requests">Requests</span>
-    </div>
-    <div class="stat-card">
-      <span class="stat-value" id="stat-latency">-</span>
-      <span class="stat-label">Avg Latency</span>
-    </div>
-    <div class="stat-card">
-      <span class="stat-value" id="stat-errors">-</span>
-      <span class="stat-label">Error Rate</span>
-    </div>
-    <div class="stat-card">
-      <span class="stat-value" id="stat-cost">-</span>
-      <span class="stat-label" id="label-cost">Est. Cost</span>
-    </div>
+  <div id="stats-container"
+    hx-get="/fragments/stats?window=1h"
+    hx-trigger="load, refresh"
+    hx-swap="outerHTML">
   </div>
 
   <h2>Transaction Log</h2>
-  <div id="transactions"><p style="color:#475569">Loading…</p></div>
+  <div hx-ext="ws" ws-connect="/ws">
+    <div id="transactions"
+      hx-get="/fragments/transactions"
+      hx-trigger="load"
+      hx-swap="outerHTML">
+      <p style="color:#475569">Loading…</p>
+    </div>
+  </div>
   <p class="hint">Stats auto-refresh every 10 s</p>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/htmx.min.js"></script>
+  <script src="/static/htmx-ws.js"></script>
+  <script src="/static/_hyperscript.min.js"></script>
 </body>
 </html>
