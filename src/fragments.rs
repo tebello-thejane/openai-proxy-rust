@@ -125,7 +125,7 @@ pub fn render_tx_detail(tx: &Value, section: DetailSection) -> Markup {
     let download_url = format!("/api/transactions/{}/{}", id, endpoint);
 
     let download_script = format!(
-        "on click\n  fetch '{}' then\n  get the result as text then\n  set blob to new Blob([it], {{type:'text/markdown'}}) then\n  set url to URL.createObjectURL(blob) then\n  set link to document.createElement('a') then\n  set link.href to url then\n  set link.download to '{}' then\n  call link.click() then\n  call URL.revokeObjectURL(url)",
+        "on click\n  fetch '{}' then\n  get the result as text then\n  set blob to new Blob([it], {{type:'text/markdown'}}) then\n  set url to URL.createObjectURL(blob) then\n  set link to document.createElement('a') then\n  set link.href to url then\n  set link.download to '{}' then\n  call document.body.appendChild(link) then\n  call link.click() then\n  call document.body.removeChild(link) then\n  call URL.revokeObjectURL(url)",
         download_url, filename
     );
 
