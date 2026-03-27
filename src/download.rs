@@ -9,7 +9,7 @@ struct Message {
     #[serde(default)]
     role: String,
     #[serde(default)]
-    content: String,
+    content: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -75,7 +75,7 @@ fn conversation_to_markdown(messages: &[Message]) -> String {
     let mut md = String::new();
     for msg in messages {
         let role = format_role(&msg.role);
-        let content = sanitize_content(&msg.content);
+        let content = sanitize_content(msg.content.as_deref().unwrap_or(""));
         md.push_str(&format!("=== {} ===\n{}\n\n", role, content));
     }
     md.trim().to_string()
@@ -167,7 +167,7 @@ pub async fn download_response(Path(id): Path<String>) -> Response<String> {
     let content = choices
         .get(0)
         .and_then(|c| c.message.as_ref())
-        .map(|m| m.content.as_str())
+        .and_then(|m| m.content.as_deref())
         .unwrap_or("");
 
     if content.is_empty() {
