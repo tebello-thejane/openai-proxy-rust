@@ -55,6 +55,7 @@ fn redact_headers(headers: &Value) -> Value {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn log_transaction(
     id: &str,
     req_method: &str,
