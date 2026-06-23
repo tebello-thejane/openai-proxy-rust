@@ -2,7 +2,7 @@ use crate::logging::log_transaction;
 use crate::metrics::extract_metrics_from_transaction;
 use crate::AppState;
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::{
     extract::Request,
     response::{IntoResponse, Response},
@@ -11,10 +11,11 @@ use flate2::read::GzDecoder;
 use serde_json::Value;
 use std::io::Read;
 use std::time::Instant;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 const MAX_BODY_SIZE: usize = 32 * 1024 * 1024; // 32 MB
+const MAX_GZIP_LOG_SIZE: usize = 1024 * 1024; // 1 MiB decompressed
 
 const HOP_BY_HOP_HEADERS: &[&str] = &[
     "connection",
@@ -44,7 +45,7 @@ pub async fn chat_completions(
     let (parts, body) = req.into_parts();
     let method = parts.method.clone();
     let uri = parts.uri.clone();
-    let headers = parts.headers.clone();
+    let headers = &parts.headers;
 
     // 2. Read Request Body (bounded to prevent OOM DoS)
     let body_bytes = match axum::body::to_bytes(body, MAX_BODY_SIZE).await {
@@ -60,7 +61,7 @@ pub async fn chat_completions(
         .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&body_bytes).to_string()));
 
     // Serialize headers for logging
-    let req_headers_json = headers_to_json(&headers);
+    let req_headers_json = headers_to_json(headers);
 
     info!("[{}] Received Request: {} {}", unique_id, method, uri);
 
@@ -73,8 +74,8 @@ pub async fn chat_completions(
     let mut upstream_req = state.client.post(&target_url).body(body_bytes.clone());
 
     // Forward headers, filtering out hop-by-hop and connection-specific headers
-    for (name, value) in &headers {
-        if name != "host" && name != "content-length" && !is_hop_by_hop(name.as_str()) {
+    for (name, value) in headers.iter() {
+        if name != header::HOST && name != header::CONTENT_LENGTH && !is_hop_by_hop(name.as_str()) {
             upstream_req = upstream_req.header(name, value);
         }
     }
@@ -99,18 +100,25 @@ pub async fn chat_completions(
                 }
             };
 
-            // Decompress for logging if gzip
+            // Decompress for logging if gzip, bounded at MAX_GZIP_LOG_SIZE.
+            // IMPORTANT: use .take() BEFORE read_to_end so the allocator never sees more than
+            // MAX_GZIP_LOG_SIZE+1 bytes — without take(), read_to_end inflates the full stream
+            // first and the size check only runs afterward (no OOM protection).
             let log_resp_bytes = if resp_headers
-                .get("content-encoding")
+                .get(header::CONTENT_ENCODING)
                 .and_then(|v| v.to_str().ok())
                 .is_some_and(|ce| ce.contains("gzip"))
             {
+                let decoder = GzDecoder::new(std::io::Cursor::new(resp_bytes.clone()));
+                let mut limited = decoder.take(MAX_GZIP_LOG_SIZE as u64 + 1);
                 let mut decompressed = Vec::new();
-                let mut decoder = GzDecoder::new(std::io::Cursor::new(resp_bytes.clone()));
-                if decoder.read_to_end(&mut decompressed).is_ok() {
-                    decompressed
-                } else {
-                    resp_bytes.to_vec()
+                match limited.read_to_end(&mut decompressed) {
+                    Ok(_) if decompressed.len() <= MAX_GZIP_LOG_SIZE => decompressed,
+                    Ok(_) => format!(
+                        "<gzip body truncated for logging at {MAX_GZIP_LOG_SIZE} bytes>"
+                    )
+                    .into_bytes(),
+                    Err(_) => resp_bytes.to_vec(),
                 }
             } else {
                 resp_bytes.to_vec()
@@ -140,12 +148,18 @@ pub async fn chat_completions(
 
             // Broadcast to WebSocket clients
             if let Some(json_str) = tx_json {
-                let _ = state.tx_broadcast.send(json_str.clone());
+                // SendError only fires when there are zero receivers (no dashboard open).
+                // That is normal operation, not an error — use debug to avoid log spam.
+                if let Err(e) = state.tx_broadcast.send(json_str.clone()) {
+                    tracing::debug!("[{}] No WebSocket clients connected, broadcast skipped: {}", unique_id, e);
+                }
 
                 // Extract and record metrics (don't fail request on metrics error)
                 if let Ok(tx_value) = serde_json::from_str::<Value>(&json_str) {
                     if let Some(metrics) = extract_metrics_from_transaction(&tx_value) {
-                        let _ = state.metrics.record_transaction(&metrics).await;
+                        if let Err(e) = state.metrics.record_transaction(&metrics).await {
+                            warn!("[{}] Failed to record metrics: {}", unique_id, e);
+                        }
                     }
                 }
             }
@@ -161,7 +175,7 @@ pub async fn chat_completions(
 
             // Copy headers back, filtering hop-by-hop headers
             for (name, value) in &resp_headers {
-                if name != "content-length" && !is_hop_by_hop(name.as_str()) {
+                if name != header::CONTENT_LENGTH && !is_hop_by_hop(name.as_str()) {
                     response.headers_mut().insert(name.clone(), value.clone());
                 }
             }
