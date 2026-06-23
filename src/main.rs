@@ -1,12 +1,16 @@
 use axum::{
+    http::StatusCode,
+    middleware::{self, Next},
+    extract::Request,
+    response::IntoResponse,
     routing::{get, post},
     Router,
 };
 use reqwest::Client;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::broadcast;
-use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -40,6 +44,36 @@ pub struct AppState {
     pub dest_url: String,
     pub tx_broadcast: Arc<broadcast::Sender<String>>,
     pub metrics: Arc<metrics::MetricsDb>,
+    /// Set when `DASHBOARD_TOKEN` env var is configured.
+    pub dashboard_token: Option<String>,
+}
+
+async fn bearer_auth(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    req: Request,
+    next: Next,
+) -> impl IntoResponse {
+    let Some(ref expected) = state.dashboard_token else {
+        return next.run(req).await.into_response();
+    };
+
+    let authorized = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .is_some_and(|token| token == expected);
+
+    if authorized {
+        next.run(req).await.into_response()
+    } else {
+        // RFC 7235 §4.1 requires WWW-Authenticate on every 401.
+        (
+            StatusCode::UNAUTHORIZED,
+            [(axum::http::header::WWW_AUTHENTICATE, "Bearer realm=\"dashboard\"")],
+        )
+            .into_response()
+    }
 }
 
 #[tokio::main]
@@ -72,23 +106,28 @@ async fn main() {
         }
     };
 
-    // 2. Setup CORS
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    // 2. Read optional dashboard bearer token
+    let dashboard_token = std::env::var("DASHBOARD_TOKEN").ok();
+    if dashboard_token.is_some() {
+        info!("Dashboard authentication enabled (DASHBOARD_TOKEN is set)");
+    }
 
     // 3. Create shared state
     let (tx, _rx) = broadcast::channel::<String>(100);
+    let client = Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .expect("Failed to build HTTP client");
     let state = AppState {
-        client: Client::new(),
+        client,
         dest_url: cli.dest.clone(),
         tx_broadcast: Arc::new(tx),
         metrics: metrics_db,
+        dashboard_token,
     };
 
-    // 4. Build Router
-    let app = Router::new()
+    // 4. Build Router — protected routes require bearer token when DASHBOARD_TOKEN is set
+    let protected = Router::new()
         .route("/", get(serve_index))
         .route("/api/transactions", get(ui::list_transactions))
         .route("/api/transactions/summary", get(ui::list_transactions_summary))
@@ -102,11 +141,14 @@ async fn main() {
         .route("/fragments/transactions", get(fragments::fragment_transactions))
         .route("/fragments/tx/:id", get(fragments::fragment_tx_detail))
         .route("/fragments/stats", get(fragments::fragment_stats))
-        .route("/test", get(test_handler))
-        .route("/v1/chat/completions", post(proxy::chat_completions))
         .route("/ws", get(ws::ws_handler))
         .nest_service("/static", ServeDir::new("static"))
-        .layer(cors)
+        .route_layer(middleware::from_fn_with_state(state.clone(), bearer_auth));
+
+    let app = Router::new()
+        .merge(protected)
+        .route("/test", get(test_handler))
+        .route("/v1/chat/completions", post(proxy::chat_completions))
         .with_state(state);
 
     // 5. Start Server

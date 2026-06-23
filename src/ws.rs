@@ -1,6 +1,7 @@
 use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
     extract::State,
+    http::{header, StatusCode},
     response::IntoResponse,
 };
 use std::sync::Arc;
@@ -14,8 +15,35 @@ pub type TxBroadcast = broadcast::Sender<String>;
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
+    // When dashboard auth is enabled, require the WebSocket Origin to match the server Host
+    // to prevent cross-site WebSocket hijacking.
+    if state.dashboard_token.is_some() {
+        let host = headers
+            .get(header::HOST)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+
+        let origin_ok = headers
+            .get(header::ORIGIN)
+            .and_then(|v| v.to_str().ok())
+            .map(|origin| {
+                // Strip scheme: "http://host:port" → "host:port"
+                let bare = origin
+                    .trim_start_matches("https://")
+                    .trim_start_matches("http://");
+                bare == host
+            })
+            .unwrap_or(false);
+
+        if !origin_ok {
+            return StatusCode::FORBIDDEN.into_response();
+        }
+    }
+
     ws.on_upgrade(move |socket| handle_socket(socket, state.tx_broadcast))
+        .into_response()
 }
 
 async fn handle_socket(mut socket: WebSocket, tx: Arc<TxBroadcast>) {
