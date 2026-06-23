@@ -8,6 +8,7 @@ use crate::metrics::{
     ChartDataPoint, ChartParams, DashboardStats, DashboardStatsV2, HourlyData, TimeWindow,
     TimeWindowStats,
 };
+use crate::store;
 use crate::AppState;
 
 pub async fn list_transactions() -> Json<Vec<Value>> {
@@ -76,25 +77,8 @@ pub async fn list_transactions_summary() -> Json<Vec<Value>> {
 pub async fn get_transaction(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
-    if let Ok(mut dir) = fs::read_dir("log").await {
-        while let Ok(Some(entry)) = dir.next_entry().await {
-            let path = entry.path();
-            let filename = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
-            let matches = filename.ends_with(&format!("_{}.json", id));
-            if matches {
-                if let Ok(contents) = fs::read_to_string(&path).await {
-                    if let Ok(val) = serde_json::from_str::<Value>(&contents) {
-                        return Ok(Json(val));
-                    }
-                }
-            }
-        }
-    }
-
-    Err(StatusCode::NOT_FOUND)
+    let uuid = store::validate_id(&id)?;
+    store::load_tx_value(&uuid).await.map(Json)
 }
 
 pub async fn get_dashboard_stats(

@@ -21,6 +21,7 @@ mod fragments;
 mod logging;
 mod metrics;
 mod proxy;
+mod store;
 mod ui;
 mod ws;
 

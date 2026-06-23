@@ -5,6 +5,7 @@ use serde_json::Value;
 use tokio::fs;
 
 use crate::metrics::{ChartParams, TimeWindow, WindowStats};
+use crate::store;
 use crate::AppState;
 
 // Lightweight transaction summary (for list rendering)
@@ -53,16 +54,16 @@ pub fn render_tx_card(summary: &TransactionSummary) -> Markup {
         .map(|s| s.to_string())
         .unwrap_or_else(|| "?".to_string());
     let status_class = match summary.status {
-        Some(s) if s >= 200 && s <= 299 => "status-ok",
+        Some(s) if (200..=299).contains(&s) => "status-ok",
         _ => "status-err",
     };
     let latency_str = summary
         .latency_ms
-        .map(|ms| format!("{} ms", ms))
+        .map(|ms| format!("{ms} ms"))
         .unwrap_or_default();
 
-    let response_hx_get = format!("/fragments/tx/{}?section=response", id);
-    let request_hx_get = format!("/fragments/tx/{}?section=request", id);
+    let response_hx_get = format!("/fragments/tx/{id}?section=response");
+    let request_hx_get = format!("/fragments/tx/{id}?section=request");
 
     html! {
         div class="tx-card" "data-tx-id"=(id) {
@@ -107,26 +108,25 @@ pub fn render_tx_detail(tx: &Value, section: DetailSection) -> Markup {
     let id = tx["id"].as_str().unwrap_or("");
     let timestamp = tx["timestamp"].as_str().unwrap_or("unknown");
     // Make timestamp safe for filenames: replace ':' with '-' and '.' with '-'
-    let timestamp_safe = timestamp.replace(':', "-").replace('.', "-");
+    let timestamp_safe = timestamp.replace([':', '.'], "-");
 
     let (endpoint, filename, button_label) = match section {
         DetailSection::Response => (
-            format!("response"),
-            format!("response_{}.md", timestamp_safe),
+            "response",
+            format!("response_{timestamp_safe}.md"),
             "⬇ Response.md",
         ),
         DetailSection::Request => (
-            format!("conversation"),
-            format!("conversation_{}.md", timestamp_safe),
+            "conversation",
+            format!("conversation_{timestamp_safe}.md"),
             "⬇ Conversation.md",
         ),
     };
 
-    let download_url = format!("/api/transactions/{}/{}", id, endpoint);
+    let download_url = format!("/api/transactions/{id}/{endpoint}");
 
     let download_script = format!(
-        "on click\n  set link to document.createElement('a') then\n  set link.href to '{}' then\n  set link.download to '{}' then\n  call document.body.appendChild(link) then\n  call link.click() then\n  call document.body.removeChild(link)",
-        download_url, filename
+        "on click\n  set link to document.createElement('a') then\n  set link.href to '{download_url}' then\n  set link.download to '{filename}' then\n  call document.body.appendChild(link) then\n  call link.click() then\n  call document.body.removeChild(link)"
     );
 
     let copy_script = "on click call navigator.clipboard.writeText(my.textContent)";
@@ -153,12 +153,12 @@ pub fn render_stats(stats: &WindowStats, window: &str) -> Markup {
         other => other,
     };
 
-    let hx_get = format!("/fragments/stats?window={}", window);
+    let hx_get = format!("/fragments/stats?window={window}");
     let avg_latency = format!("{} ms", stats.avg_latency_ms.round() as i64);
     let error_rate = format!("{:.1}%", stats.error_rate);
     let cost = format!("${:.4}", stats.cost);
-    let requests_label = format!("Requests ({})", window_label);
-    let cost_label = format!("Cost ({})", window_label);
+    let requests_label = format!("Requests ({window_label})");
+    let cost_label = format!("Cost ({window_label})");
 
     html! {
         div id="stats-container"
@@ -263,38 +263,13 @@ pub async fn fragment_tx_detail(
     Path(id): Path<String>,
     Query(params): Query<DetailParams>,
 ) -> Result<Markup, StatusCode> {
-    if let Ok(mut dir) = fs::read_dir("log").await {
-        while let Ok(Some(entry)) = dir.next_entry().await {
-            let path = entry.path();
-            let filename = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
-            if filename.ends_with(&format!("_{}.json", id)) {
-                let contents = match fs::read_to_string(&path).await {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::warn!("Failed to read transaction file {:?}: {}", path, e);
-                        continue;
-                    }
-                };
-                let tx = match serde_json::from_str::<Value>(&contents) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::warn!("Failed to parse transaction file {:?}: {}", path, e);
-                        continue;
-                    }
-                };
-                let section = match params.section.as_deref() {
-                    Some("request") => DetailSection::Request,
-                    _ => DetailSection::Response,
-                };
-                return Ok(render_tx_detail(&tx, section));
-            }
-        }
-    }
-
-    Err(StatusCode::NOT_FOUND)
+    let uuid = store::validate_id(&id)?;
+    let tx = store::load_tx_value(&uuid).await?;
+    let section = match params.section.as_deref() {
+        Some("request") => DetailSection::Request,
+        _ => DetailSection::Response,
+    };
+    Ok(render_tx_detail(&tx, section))
 }
 
 pub async fn fragment_stats(

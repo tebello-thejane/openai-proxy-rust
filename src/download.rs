@@ -2,7 +2,8 @@ use axum::extract::Path;
 use axum::http::StatusCode;
 use axum::response::Response;
 use serde::Deserialize;
-use tokio::fs;
+
+use crate::store;
 
 #[derive(Debug, Deserialize)]
 struct Message {
@@ -76,46 +77,33 @@ fn conversation_to_markdown(messages: &[Message]) -> String {
     for msg in messages {
         let role = format_role(&msg.role);
         let content = sanitize_content(msg.content.as_deref().unwrap_or(""));
-        md.push_str(&format!("=== {} ===\n{}\n\n", role, content));
+        md.push_str(&format!("=== {role} ===\n{content}\n\n"));
     }
     md.trim().to_string()
 }
 
 fn response_to_markdown(content: &str) -> String {
     let sanitized = sanitize_content(content);
-    format!("=== Assistant ===\n{}", sanitized)
-}
-
-async fn load_transaction(id: &str) -> Result<Transaction, StatusCode> {
-    // Find the transaction file by pattern matching
-    let mut dir = fs::read_dir("log").await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    while let Ok(Some(entry)) = dir.next_entry().await {
-        let path = entry.path();
-        let filename = path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-        if filename.ends_with(&format!("_{}.json", id)) {
-            let contents = fs::read_to_string(&path).await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            let tx: Transaction = serde_json::from_str(&contents)
-                .map_err(|_| StatusCode::BAD_REQUEST)?;
-            return Ok(tx);
-        }
-    }
-
-    Err(StatusCode::NOT_FOUND)
+    format!("=== Assistant ===\n{sanitized}")
 }
 
 pub async fn download_conversation(Path(id): Path<String>) -> Response<String> {
-    let tx = match load_transaction(&id).await {
+    let uuid = match store::validate_id(&id) {
+        Ok(u) => u,
+        Err(e) => {
+            return Response::builder()
+                .status(e)
+                .body("Invalid transaction id".to_string())
+                .expect("static response builder cannot fail");
+        }
+    };
+    let tx = match store::load_tx_typed::<Transaction>(&uuid).await {
         Ok(t) => t,
         Err(e) => {
             return Response::builder()
                 .status(e)
                 .body("Transaction not found".to_string())
-                .unwrap();
+                .expect("static response builder cannot fail");
         }
     };
 
@@ -128,27 +116,36 @@ pub async fn download_conversation(Path(id): Path<String>) -> Response<String> {
         return Response::builder()
             .status(StatusCode::BAD_REQUEST)
             .body("No messages to download".to_string())
-            .unwrap();
+            .expect("static response builder cannot fail");
     }
 
     let md = conversation_to_markdown(&messages);
-    let filename = format!("conversation_{}.md", id);
+    let filename = format!("conversation_{uuid}.md");
 
     Response::builder()
         .header("Content-Type", "text/markdown")
-        .header("Content-Disposition", format!("attachment; filename=\"{}\"", filename))
+        .header("Content-Disposition", format!("attachment; filename=\"{filename}\""))
         .body(md)
-        .unwrap()
+        .expect("static response builder cannot fail")
 }
 
 pub async fn download_response(Path(id): Path<String>) -> Response<String> {
-    let tx = match load_transaction(&id).await {
+    let uuid = match store::validate_id(&id) {
+        Ok(u) => u,
+        Err(e) => {
+            return Response::builder()
+                .status(e)
+                .body("Invalid transaction id".to_string())
+                .expect("static response builder cannot fail");
+        }
+    };
+    let tx = match store::load_tx_typed::<Transaction>(&uuid).await {
         Ok(t) => t,
         Err(e) => {
             return Response::builder()
                 .status(e)
                 .body("Transaction not found".to_string())
-                .unwrap();
+                .expect("static response builder cannot fail");
         }
     };
 
@@ -161,11 +158,11 @@ pub async fn download_response(Path(id): Path<String>) -> Response<String> {
         return Response::builder()
             .status(StatusCode::BAD_REQUEST)
             .body("No response to download".to_string())
-            .unwrap();
+            .expect("static response builder cannot fail");
     }
 
     let content = choices
-        .get(0)
+        .first()
         .and_then(|c| c.message.as_ref())
         .and_then(|m| m.content.as_deref())
         .unwrap_or("");
@@ -174,15 +171,15 @@ pub async fn download_response(Path(id): Path<String>) -> Response<String> {
         return Response::builder()
             .status(StatusCode::BAD_REQUEST)
             .body("Response has no content".to_string())
-            .unwrap();
+            .expect("static response builder cannot fail");
     }
 
     let md = response_to_markdown(content);
-    let filename = format!("response_{}.md", id);
+    let filename = format!("response_{uuid}.md");
 
     Response::builder()
         .header("Content-Type", "text/markdown")
-        .header("Content-Disposition", format!("attachment; filename=\"{}\"", filename))
+        .header("Content-Disposition", format!("attachment; filename=\"{filename}\""))
         .body(md)
-        .unwrap()
+        .expect("static response builder cannot fail")
 }
