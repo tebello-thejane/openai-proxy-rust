@@ -172,9 +172,12 @@ fn date_bucket(ts: DateTime<Utc>) -> String {
 impl MetricsDb {
     pub async fn new(path: &str) -> Result<Self, sqlx::Error> {
         let pool = SqlitePoolOptions::new()
-            .max_connections(5)
+            .max_connections(10)
             .connect(path)
             .await?;
+
+        // WAL must be set before schema DDL so subsequent writes use the WAL journal.
+        sqlx::query("PRAGMA journal_mode = WAL").execute(&pool).await?;
 
         sqlx::query(
             r#"
@@ -212,8 +215,6 @@ impl MetricsDb {
         )
         .execute(&pool)
         .await?;
-
-        sqlx::query("PRAGMA journal_mode = WAL").execute(&pool).await?;
 
         Ok(Self { pool })
     }
@@ -294,7 +295,10 @@ impl MetricsDb {
     pub async fn get_dashboard_stats(&self) -> Result<DashboardStats, sqlx::Error> {
         let now = Utc::now();
         let hour_ago = now - Duration::hours(1);
-        let today_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap();
+        let today_start = now
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .expect("midnight is always a valid time");
         let today_start_ts: DateTime<Utc> = DateTime::from_naive_utc_and_offset(today_start, Utc);
         let today_start_ts = today_start_ts.timestamp();
         let hour_ago_bucket = hour_bucket(hour_ago);
@@ -437,7 +441,7 @@ impl MetricsDb {
         let data: Vec<HourlyData> = rows
             .into_iter()
             .map(|(bucket, requests)| {
-                let dt = DateTime::from_timestamp(bucket, 0).unwrap_or_else(|| Utc::now());
+                let dt = DateTime::from_timestamp(bucket, 0).unwrap_or_else(Utc::now);
                 HourlyData {
                     hour: dt.format("%H:%M").to_string(),
                     requests,
@@ -454,7 +458,9 @@ impl MetricsDb {
     ) -> Result<WindowStats, sqlx::Error> {
         let now = Utc::now();
         let start_time = now - Duration::seconds(window.as_seconds());
-        let start_timestamp = start_time.timestamp();
+        // Align to the hour bucket *containing* start_time so sub-hour windows
+        // still include the current partial hour.
+        let start_bucket = hour_bucket(start_time);
 
         let row: (i64, Option<i64>, i64, f64, i64) = sqlx::query_as(
             r#"
@@ -468,7 +474,7 @@ impl MetricsDb {
             WHERE hour_bucket >= ?
             "#,
         )
-        .bind(start_timestamp)
+        .bind(start_bucket)
         .fetch_one(&self.pool)
         .await?;
 
@@ -495,7 +501,7 @@ impl MetricsDb {
     ) -> Result<Vec<ChartDataPoint>, sqlx::Error> {
         let now = Utc::now();
         let start_time = now - Duration::seconds(window.as_seconds());
-        let start_timestamp = start_time.timestamp();
+        let start_bucket = hour_bucket(start_time);
 
         // For sub-hour buckets, we need to aggregate from the hourly data
         // Since we're storing hourly buckets, we'll distribute the data
@@ -511,14 +517,14 @@ impl MetricsDb {
             ORDER BY hour_bucket ASC
             "#,
         )
-        .bind(start_timestamp)
+        .bind(start_bucket)
         .fetch_all(&self.pool)
         .await?;
 
         let data: Vec<ChartDataPoint> = rows
             .into_iter()
             .map(|(bucket, requests)| {
-                let dt = DateTime::from_timestamp(bucket, 0).unwrap_or_else(|| Utc::now());
+                let dt = DateTime::from_timestamp(bucket, 0).unwrap_or_else(Utc::now);
                 let label = dt.format("%H:%M").to_string();
                 ChartDataPoint { label, requests }
             })
@@ -533,7 +539,7 @@ impl MetricsDb {
     ) -> Result<Vec<ModelStats>, sqlx::Error> {
         let now = Utc::now();
         let start_time = now - Duration::seconds(window.as_seconds());
-        let start_timestamp = start_time.timestamp();
+        let start_bucket = hour_bucket(start_time);
 
         let model_rows: Vec<(String, i64, i64, f64)> = sqlx::query_as(
             r#"
@@ -548,7 +554,7 @@ impl MetricsDb {
             ORDER BY requests DESC
             "#,
         )
-        .bind(start_timestamp)
+        .bind(start_bucket)
         .fetch_all(&self.pool)
         .await?;
 
@@ -566,7 +572,6 @@ impl MetricsDb {
 
 pub fn extract_metrics_from_transaction(tx_json: &Value) -> Option<TransactionMetrics> {
     let res = tx_json.get("response")?;
-    let _req = tx_json.get("request")?;
     let resp_body = res.get("body")?;
 
     let status = res.get("status")?.as_u64()? as u16;
